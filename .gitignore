@@ -32,3 +32,4 @@ tools/bake/_preview/
 tests/_pack_out*/
 tests/_pack_qa_out*/
 tests/_synthetic/
+tests/_pack_qa/
