@@ -61,6 +61,27 @@ node server.mjs --open    :: 启动 http://127.0.0.1:5178/ 并打开浏览器
 </tr>
 </table>
 
+### 最近更新（2026-10-26）
+
+<table>
+<tr>
+<td><img src="docs/shots/double-chest.png" alt="双箱子" width="420"></td>
+<td><img src="docs/shots/fluids.png" alt="流体高度" width="420"></td>
+</tr>
+<tr>
+<td align="center">双箱子拼成 30px 宽、中间只有一个锁扣</td>
+<td align="center">水流按 <code>level</code> 分级高度、岩浆同理、含水方块叠水层</td>
+</tr>
+<tr>
+<td><img src="docs/shots/glass.png" alt="玻璃" width="420"></td>
+<td><img src="docs/shots/slice.png" alt="切片" width="420"></td>
+</tr>
+<tr>
+<td align="center">玻璃改为写深度，能正确看到里面（不再整片发白）</td>
+<td align="center">切片按层截断实例，切口干净、无背面重影</td>
+</tr>
+</table>
+
 
 ## 它是怎么做到的
 
