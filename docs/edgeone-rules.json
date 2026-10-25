@@ -2,7 +2,8 @@
   "FormatVersion": "1.0",
   "Rules": [
     {
-      "RuleName": "网站加速-litematic.zuoqirun.top",
+      "RuleName": "litematic-webview",
+      "Status": "enable",
       "Branches": [
         {
           "Condition": "${http.request.host} in ['litematic.zuoqirun.top']",
@@ -21,10 +22,6 @@
             {
               "Name": "CacheKey",
               "CacheKeyParameters": {
-                "QueryString": {
-                  "Switch": "on",
-                  "Values": []
-                },
                 "FullURLCache": "on",
                 "IgnoreCase": "off"
               }
@@ -34,7 +31,7 @@
             {
               "Branches": [
                 {
-                  "Condition": "${http.request.uri.path} matches '/api/*'",
+                  "Condition": "${http.request.uri.path} matches '^/api/'",
                   "Actions": [
                     {
                       "Name": "Cache",
@@ -46,13 +43,12 @@
                     }
                   ]
                 }
-              ],
-              "Description": []
+              ]
             },
             {
               "Branches": [
                 {
-                  "Condition": "${http.request.uri.path} in ['/'] or ${http.request.file_extension} in ['html', 'htm']",
+                  "Condition": "${http.request.file_extension} in ['html', 'htm']",
                   "Actions": [
                     {
                       "Name": "Cache",
@@ -64,58 +60,29 @@
                     }
                   ]
                 }
-              ],
-              "Description": []
+              ]
             },
             {
               "Branches": [
                 {
-                  "Condition": "${http.request.uri.path} matches '/assets/*' or ${http.request.uri.path} matches '/packs/*' or ${http.request.uri.path} matches '/samples/*' or ${http.request.uri.path} in ['/app.js', '/styles.css']",
+                  "Condition": "${http.request.file_extension} in ['js', 'css', 'json', 'png', 'webp', 'jpg', 'jpeg', 'svg', 'ico', 'woff', 'woff2', 'litematic']",
                   "Actions": [
                     {
                       "Name": "Cache",
                       "CacheParameters": {
-                        "FollowOrigin": {
+                        "CustomTime": {
                           "Switch": "on",
-                          "DefaultCache": "on",
-                          "DefaultCacheStrategy": "on",
-                          "DefaultCacheTime": 0
+                          "CacheTime": 86400
                         }
                       }
-                    },
-                    {
-                      "Name": "MaxAge",
-                      "MaxAgeParameters": {
-                        "FollowOrigin": "on",
-                        "CacheTime": 0
-                      }
                     }
                   ]
                 }
-              ],
-              "Description": []
-            },
-            {
-              "Branches": [
-                {
-                  "Condition": "${http.request.file_extension} in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg', 'webp', 'ico', 'woff', 'woff2', 'js', 'css']",
-                  "Actions": [
-                    {
-                      "Name": "MaxAge",
-                      "MaxAgeParameters": {
-                        "FollowOrigin": "off",
-                        "CacheTime": 86400
-                      }
-                    }
-                  ]
-                }
-              ],
-              "Description": []
+              ]
             }
           ]
         }
-      ],
-      "Description": []
+      ]
     }
   ]
 }
