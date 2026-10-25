@@ -164,7 +164,72 @@ node _deploy/put.mjs app  /www/wwwroot/litematic.zuoqirun.top/app
 
 注意：**Chrome 只在 HTTPS 下才和服务器协商 brotli**，所以走 Cloudflare / 装好证书后能再省 40% 左右。模型分片多了几十上百个请求，HTTP/1.1 下受浏览器每域名 6 并发限制；上了 HTTPS（HTTP/2 多路复用）后这批请求基本不增加等待时间。
 
-CDN 相关：静态资源已带 immutable 缓存头，代理/CDN 开启缓存后回源只发生一次。**当前 EdgeOne 加速域名实测把所有资源都回源（`EO-Cache-Status: MISS`，连 `?v=` 的不可变资源也不缓存），且没有为该域名绑定证书（HTTPS 报证书不匹配）**——这是「下载慢」的主因，需要在 EdgeOne 控制台：① 绑定/上传 `litematic.zuoqirun.top` 的证书；② 打开缓存并配置缓存规则（按 `Cache-Control` 遵循源站、缓存键忽略查询字符串、`.js/.css/.json/.webp` 长缓存）；③ 开启 Brotli。若改用 Cloudflare：不要开「Rocket Loader」（会破坏 ES module），也不用开 Mirage/Polish（图集是像素画，二次编码会糊）。
+CDN 相关：静态资源已带 immutable 缓存头，代理/CDN 开启缓存后回源只发生一次。**当前 EdgeOne 加速域名实测把所有资源都回源（`EO-Cache-Status: MISS`，连 `?v=` 的不可变资源也不缓存），且没有为该域名绑定证书（HTTPS 报证书不匹配）**——这是「下载慢」的主因，需要在 EdgeOne 控制台：① 绑定/上传 `litematic.zuoqirun.top` 的证书；② 打开缓存并配置缓存规则（按 `Cache-Control` 遵循源站、**缓存键必须保留查询字符串**、`.js/.css/.json/.webp` 长缓存）；③ 开启 Brotli。若改用 Cloudflare：不要开「Rocket Loader」（会破坏 ES module），也不用开 Mirage/Polish（图集是像素画，二次编码会糊）。
+
+### EdgeOne 回源 Host 的坑（2026-10 实测）
+
+加速域名一切正常但页面变成「恭喜，站点创建成功！」时，是**回源 Host 不对**：EdgeOne 默认可能用「源站地址」当 Host，本机 nginx 会命中 `server_name 192.168.1.60` 的 vhost（`root /www/wwwroot/panel_ssl_site`，就是宝塔欢迎页），而不是 `node_litematic_viewer.conf`。
+
+判定方法：
+
+```bash
+curl -I https://litematic.zuoqirun.top/            # 看 Last-Modified / ETag 是否指向欢迎页
+curl -s -H "Host: litematic.zuoqirun.top" http://127.0.0.1/ | head -5   # 源站在本机带正确 Host 是正常的
+tail -5 /www/wwwlogs/litematic_viewer.log          # 看不到 CDN 回源请求 ⇒ 请求落到了别的 vhost
+```
+
+修法：EdgeOne 控制台 → 站点 → 加速域名 → **源站配置 → 回源 Host** 改为「跟随加速域名」或填 `litematic.zuoqirun.top`，然后**全站刷新缓存**（旧页面已被边缘缓存，不刷新会继续返回欢迎页）。
+
+### 缓存规则建议（EdgeOne「节点缓存」）
+
+优先级从上到下（EdgeOne 按顺序匹配，先命中先生效）：
+
+1. `${http.request.uri.path} matches '/api/*'` → **不缓存**（接口必须实时：上传列表、能力探测、材质包状态）。
+2. `${http.request.file_extension} in ['html','htm']` 或路径为 `/` → **不缓存**（HTML 不缓存，发版立即生效；源站已发 `no-cache`）。
+3. `${http.request.uri.path} matches '/assets/*'`、`'/packs/*'`、`'/samples/*'`、`/app.js`、`/styles.css` → **遵循源站**（`?v=` 资源源站给的是 `immutable, max-age=31536000`，一次回源后长期命中；无 `?v=` 的给 1 小时）。
+4. 兜底：`jpg/png/gif/svg/webp/woff2` 等 → 1 天。
+
+**缓存键（CacheKey）必须把「保留查询字符串」打开**：本站用 `?v=<hash>` 做版本失效，忽略查询串会让发版后边缘继续返回旧的 `app.js`/模型分片（最坏锁一年）。
+
+可直接对照调整的规则（EdgeOne 规则 JSON 结构，按需在控制台里逐条改）：
+
+```jsonc
+{
+  "FormatVersion": "1.0",
+  "Rules": [{
+    "RuleName": "网站加速-litematic.zuoqirun.top",
+    "Branches": [{
+      "Condition": "${http.request.host} in ['litematic.zuoqirun.top']",
+      "Actions": [
+        { "Name": "Cache", "CacheParameters": { "FollowOrigin": {
+            "Switch": "on", "DefaultCache": "on", "DefaultCacheStrategy": "on", "DefaultCacheTime": 0 } } },
+        // 关键：保留查询串，?v= 才能参与缓存键
+        { "Name": "CacheKey", "CacheKeyParameters": {
+            "QueryString": { "Switch": "on", "Values": [] },
+            "FullURLCache": "on", "IgnoreCase": "off" } }
+      ],
+      "SubRules": [
+        { "Branches": [{ "Condition": "${http.request.uri.path} matches '/api/*'",
+            "Actions": [{ "Name": "Cache", "CacheParameters": { "NoCache": { "Switch": "on" } } }] }] },
+        { "Branches": [{ "Condition": "${http.request.uri.path} in ['/'] or ${http.request.file_extension} in ['html', 'htm']",
+            "Actions": [{ "Name": "Cache", "CacheParameters": { "NoCache": { "Switch": "on" } } }] }] },
+        { "Branches": [{ "Condition": "${http.request.uri.path} matches '/assets/*' or ${http.request.uri.path} matches '/packs/*' or ${http.request.uri.path} matches '/samples/*' or ${http.request.uri.path} in ['/app.js', '/styles.css']",
+            "Actions": [{ "Name": "MaxAge", "MaxAgeParameters": { "FollowOrigin": "on", "CacheTime": 0 } }] }] },
+        { "Branches": [{ "Condition": "${http.request.file_extension} in ['jpg','jpeg','png','gif','bmp','svg','webp','ico','woff','woff2','js','css']",
+            "Actions": [{ "Name": "MaxAge", "MaxAgeParameters": { "FollowOrigin": "off", "CacheTime": 86400 } }] }] }
+      ]
+    }]
+  }]
+}
+```
+
+站点改完回源 Host 后，验证：
+
+```bash
+curl -sI https://litematic.zuoqirun.top/ | grep -i 'EO-Cache-Status\|Last-Modified'
+curl -s  https://litematic.zuoqirun.top/ | grep -o '<title>[^<]*</title>'   # 应为「投影查看器」
+curl -sI https://litematic.zuoqirun.top/app.js?v=xxx | grep -i 'EO-Cache-Status\|content-encoding'  # 二次请求应 HIT + br
+```
 
 
 ## 启用 HTTPS（域名解析生效后）
