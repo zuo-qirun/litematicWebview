@@ -216,40 +216,51 @@ def check_sample(ctx, pack_texs, base_atlas, sample, seed, check_all):
     report = ctx['report'] or {}
     index = ((report.get('atlasIndex') or {}).get('index')) or {}
 
-    referenced = collections.OrderedDict()
+    # uv 包围盒：所有引用该纹理的 quad 的并集
+    uv_bbox = collections.OrderedDict()
     for mid, mb in boxes.items():
         for tex, box in mb.items():
             if tex not in pack_texs:
                 continue
-            cur = referenced.get(tex)
+            cur = uv_bbox.get(tex)
             if cur is None:
-                referenced[tex] = [box[0], box[1], box[2], box[3]]
+                uv_bbox[tex] = [box[0], box[1], box[2], box[3]]
             else:
                 cur[0] = min(cur[0], box[0])
                 cur[1] = min(cur[1], box[1])
                 cur[2] = max(cur[2], box[2])
                 cur[3] = max(cur[3], box[3])
-    if not referenced:
+    if not uv_bbox:
         print('FAIL：产物里没有任何 quad 引用包内纹理')
         return 1
 
-    # 只抽「真的换了」的纹理：与 base 同区域像素不同（没有 base 时退化为全部）
+    # 图集格优先用 report.atlasIndex（texture 通常整格贴图，但 quad 可能只用一部分：
+    # 如 black_stained_glass_pane_top 只用 2x16、chain 只用 6x16；用 uv 包围盒会误判）。
+    # 旧产物没有索引时才退化为 uv 包围盒。
+    cells = collections.OrderedDict()
+    for tex, box in uv_bbox.items():
+        idx = index.get(tex)
+        if isinstance(idx, (list, tuple)) and len(idx) == 4:
+            cells[tex] = [int(round(v)) for v in idx]
+        else:
+            cells[tex] = [int(round(v)) for v in box]
+
+    # 只抽「真的换了」的纹理：与 base 同格像素不同（没有 base 时退化为全部）
     changed = collections.OrderedDict()
-    for tex, box in referenced.items():
-        x0, y0, x1, y1 = [int(round(v)) for v in box]
-        if x1 <= x0 or y1 <= y0:
+    for tex, (x, y, w, h) in cells.items():
+        if w <= 0 or h <= 0:
             continue
         if base_atlas is not None:
-            if x1 > base_atlas.width or y1 > base_atlas.height:
+            if x + w > base_atlas.width or y + h > base_atlas.height:
                 continue
-            base_px = base_atlas.crop((x0, y0, x1, y1))
-            if base_px.size != (x1 - x0, y1 - y0):
+            base_px = base_atlas.crop((x, y, x + w, y + h))
+            if base_px.size != (w, h):
                 continue
-            if _max_diff(base_px, atlas.crop((x0, y0, x1, y1))) == 0:
-                continue        # 与 base 一样：改纹理没变化，不适合当"覆盖生效"样本
-        changed[tex] = (x0, y0, x1, y1)
+            if _max_diff(base_px, atlas.crop((x, y, x + w, y + h))) == 0:
+                continue        # 与 base 一样：改纹理没变化，不适合当「覆盖生效」样本
+        changed[tex] = (x, y, w, h)
 
-    pool = list(changed) if changed else list(referenced)
+    pool = list(changed) if changed else list(cells)
     if not check_all:
         rnd = random.Random(seed)
         sample = min(sample, len(pool))
@@ -259,34 +270,37 @@ def check_sample(ctx, pack_texs, base_atlas, sample, seed, check_all):
 
     print('=-' * 78)
     print('原子图集 %dx%d；包内纹理 %d 张，被产物模型引用 %d 张，其中与 base 不同 %d 张'
-          % (atlas.width, atlas.height, len(pack_texs), len(referenced), len(changed)))
+          % (atlas.width, atlas.height, len(pack_texs), len(cells), len(changed)))
     print('抽检 %d 张：%s' % (len(picked), ', '.join(picked)))
     print('-' * 78)
 
     fails = 0
     for tex in picked:
-        x0, y0, x1, y1 = changed.get(tex, tuple(int(round(v)) for v in referenced[tex]))
-        w, h = x1 - x0, y1 - y0
-        got = atlas.crop((x0, y0, x1, y1))
+        x, y, w, h = changed.get(tex, tuple(cells[tex]))
+        got = atlas.crop((x, y, x + w, y + h))
         want = _fit(pack_texs[tex], (w, h))
         d_pack = _max_diff(got, want)
         d_base = None
-        if base_atlas is not None and x1 <= base_atlas.width and y1 <= base_atlas.height:
-            d_base = _max_diff(base_atlas.crop((x0, y0, x1, y1)), got)
+        if base_atlas is not None and x + w <= base_atlas.width and y + h <= base_atlas.height:
+            d_base = _max_diff(base_atlas.crop((x, y, x + w, y + h)), got)
         bl = names_by_block.get(tex) or []
         ok = d_pack == 0 and (d_base is None or d_base > 0)
+        # uv 包围盒必须落在图集格内（只用到一部分是合法的，越界才是产物 bug）
+        bx0, by0, bx1, by1 = [int(round(v)) for v in uv_bbox[tex]]
+        uv_ok = bx0 >= x and by0 >= y and bx1 <= x + w and by1 <= y + h
+        if not uv_ok:
+            ok = False
         if not ok:
             fails += 1
-        # 与 report.atlasIndex 交叉核对
         note = ''
-        if isinstance(index.get(tex), (list, tuple)) and len(index[tex]) == 4:
-            idx = [int(round(v)) for v in index[tex]]
-            if idx[:2] != [x0, y0] or [x0 + w, y0 + h] != [idx[0] + idx[2], idx[1] + idx[3]]:
-                note = ' [warn] atlasIndex=%s 与 uv 包围盒不一致' % idx
+        if not uv_ok:
+            note = '  [warn] uv 包围盒 %s 超出图集格' % ([bx0, by0, bx1, by1],)
+        elif (bx1 - bx0, by1 - by0) != (w, h):
+            note = '（uv 只覆盖 %dx%d）' % (bx1 - bx0, by1 - by0)
         print('  %-42s cell=(%4d,%4d, %2dx%-2d) 包纹理=%-8s 像素差(pack)=%d 与base差=%s%s %s'
-              % (tex, x0, y0, w, h, '%dx%d' % pack_texs[tex].size, d_pack,
-                 d_base if d_base is not None else '-', '' if ok else '  <== FAIL',
-                 note))
+              % (tex, x, y, w, h, '%dx%d' % pack_texs[tex].size, d_pack,
+                 d_base if d_base is not None else '-', note,
+                 '' if ok else '  <== FAIL'))
         if bl:
             print('      引用方块：%s' % ', '.join(bl[:6]))
     if fails:

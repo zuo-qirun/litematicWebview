@@ -18,7 +18,10 @@
   8. 材质包覆盖的纹理确实出现在产物图集里（像素级比对，仅检查被模型引用的纹理）；
      另外校验 report.json 的 overrides/overridesDetail/stats 与 zip 实际内容一致，
      并把 report.warnings（如 pack.mcmeta 版本不匹配）原样当警告打印。
-  9. 继承箱子实体模型（post_entity_models.py）生效。
+  9. 继承箱子实体模型（post_entity_models.py）生效，且双箱子契约成立：
+     完整模型 18 quads；半模型 {12,18} 合法（东/无锁扣期望 12、西/带锁扣期望 18，
+     与期望不符只警告）；blocks.json 里「含 type 的变体」必须排在「只有 facing 的
+     变体」之前（db.resolve 取首个命中项，顺序反了双箱会退化成两个单箱，属 FAIL）。
  10. manifest 继承 base 且 models/ 分片齐全、modelsCount 与实际一致（viewer 按需加载契约）。
 
 退出码：0 = 全部通过（允许警告），1 = 有失败项。
@@ -579,9 +582,55 @@ def _referenced_models(defn):
     return ids
 
 
+HALF_QUADS_EXPECT = {'east': 12, 'west': 18}
+
+
+def _check_chest_variant_order(block_id, defn, expect_double=True):
+    """双箱子：blocks.json 里含 type 的变体必须排在只有 facing 的变体之前。
+
+    前端 src/render/db.js 的 resolve() 取「第一个 when 全命中」的变体；如果只有
+    facing 的变体排在前面，双箱（type=left/right）永远命不中，会退化成两个单箱。
+    末影箱没有双箱状态（expect_double=False），没有 type 变体属正常。
+    """
+    variants = (defn or {}).get('variants') or []
+    first_type = None
+    first_facing = None
+    for i, it in enumerate(variants):
+        when = it.get('when')
+        if not isinstance(when, dict):
+            continue
+        if 'type' in when:
+            if first_type is None:
+                first_type = i
+        elif set(when) == {'facing'} and first_facing is None:
+            first_facing = i
+    if first_type is None:
+        if expect_double:
+            warn('%s 没有含 type 的变体（双箱子 type=left/right 无法被选中）' % block_id)
+        else:
+            print('   %-24s 无双箱变体（末影箱无 type 状态，正常）' % block_id)
+        return
+    if first_facing is not None and first_type > first_facing:
+        fail('%s 变体顺序错误：只有 facing 的变体 #%d 排在含 type 的变体 #%d 之前，'
+             'db.resolve() 会先命中单箱，双箱退化成两个单箱' % (block_id, first_facing, first_type))
+    else:
+        print('   %-24s 变体顺序 OK（含 type #%d < 只有 facing %s）'
+              % (block_id, first_type,
+                 ('#%d' % first_facing) if first_facing is not None else '(无)'))
+
+
 def check_entity_models(models, blocks, report):
-    """bake-entities 后处理：箱子/陷阱箱/末影箱应继承 18 quad 实体模型。"""
-    print('9. 继承箱子实体模型（post_entity_models.py）')
+    """bake-entities 后处理：箱子/陷阱箱/末影箱应继承实体模型。
+
+    判定口径（双箱子契约）：
+      * 方块引用的**全部**模型都必须使用 entity/chest/* 实体纹理（而不是原版立方体纹理）；
+      * 完整模型（block/chest、block/chest#0,90…）必须是 18 quad；
+      * 双箱子半模型允许 {12,18} quad：西半边（带锁扣）期望 18、东半边（无锁扣）
+        期望 12；与期望值不符只打 warning（避免几何微调就红灯），不在集合内才 FAIL；
+      * 每个方块至少要有一个完整模型，防止只剩半模型；
+      * blocks.json 里含 type 的变体必须排在只有 facing 的变体之前（否则双箱退化成单箱，FAIL）。
+    """
+    print('9. 继承箱子实体模型（post_entity_models.py）与双箱子契约')
     post = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         'post_entity_models.py')
     applied = bool(isinstance(report, dict)
@@ -592,38 +641,63 @@ def check_entity_models(models, blocks, report):
     if not applied and isinstance(report, dict):
         warn('report.postEntityModels.applied 不为 true（后处理可能未生效，见 report.notes）')
     expect = [
-        ('minecraft:chest', 'block/chest', 'entity/chest/normal'),
-        ('minecraft:trapped_chest', 'block/trapped_chest', 'entity/chest/trapped'),
-        ('minecraft:ender_chest', 'block/ender_chest', 'entity/chest/ender'),
+        ('minecraft:chest', 'block/chest', 'entity/chest/normal', True),
+        ('minecraft:trapped_chest', 'block/trapped_chest', 'entity/chest/trapped', True),
+        ('minecraft:ender_chest', 'block/ender_chest', 'entity/chest/ender', False),
     ]
     found = 0
-    for block_id, base_mid, expect_tex in expect:
+    for block_id, base_mid, expect_tex, expect_double in expect:
         bd = (blocks or {}).get(block_id)
         if not bd:
             warn('%s 不存在，跳过' % block_id)
             continue
-        ids = [m for m in _referenced_models(bd) if m.startswith(base_mid)]
+        _check_chest_variant_order(block_id, bd, expect_double=expect_double)
+        ids = sorted(set(m for m in _referenced_models(bd) if m.startswith(base_mid)))
         if not ids:
             fail('%s 未引用 %s 模型（应继承实体箱子模型）' % (block_id, base_mid))
             continue
+        full, half, bad = [], [], 0
         for mid in ids:
             md = (models or {}).get(mid)
             if not md:
                 fail('%s 引用的模型 %s 不存在' % (block_id, mid))
+                bad += 1
                 continue
             quads = md.get('quads') or []
-            if len(quads) != 18:
-                fail('%s 的 quad 数=%d，应为 18（实体箱子）' % (mid, len(quads)))
-                continue
+            n = len(quads)
             texs = {str(q.get('tex')) for q in quads}
             if not any(t.startswith('entity/chest/') for t in texs):
                 fail('%s 未使用实体箱子纹理（实际 %s）' % (mid, sorted(texs)[:3]))
+                bad += 1
                 continue
+            is_half = mid.startswith(base_mid + '_')
+            if is_half:
+                if n not in (12, 18):
+                    fail('%s 的 quad 数=%d，双箱子半模型应为 12 或 18（实体箱子）' % (mid, n))
+                    bad += 1
+                    continue
+                side = 'east' if mid.startswith(base_mid + '_east') else 'west'
+                want = HALF_QUADS_EXPECT[side]
+                if n != want:
+                    warn('%s 的 quad 数=%d，期望 %d（%s 半边，%s）；仍在允许集合 {12,18} 内'
+                         % (mid, n, want, side, '无锁扣' if side == 'east' else '带锁扣'))
+                half.append(mid)
+            else:
+                if n != 18:
+                    fail('%s 的 quad 数=%d，完整模型应为 18（实体箱子）' % (mid, n))
+                    bad += 1
+                    continue
+                full.append(mid)
+        if not full:
+            fail('%s 缺少完整的 18-quad 实体箱子模型（只有半模型：%s）'
+                 % (block_id, ', '.join(half[:3])))
+            bad += 1
+        if bad == 0:
             found += 1
-        print('   方块 %-22s 模型 %d 个（含旋转展开），quad 均为 18，纹理 %s'
-              % (block_id, len(ids), expect_tex))
+        print('   方块 %-22s 完整模型 %d 个（18 quad）+ 半模型 %d 个，纹理 %s'
+              % (block_id, len(full), len(half), expect_tex))
     if found:
-        print('   共 %d 个继承模型通过（方块 %d 个）' % (found, len(expect)))
+        print('   %d/%d 个方块通过箱子实体模型继承检查' % (found, len(expect)))
 
 
 # ---------------------------------------------------------------------------
@@ -695,6 +769,29 @@ def check_manifest_shards(out, manifest, models):
              % (bad, len(sample)))
     else:
         print('   抽查 %d 个分片：内容与 models.json 一致' % len(sample))
+    # 与 base 的模型集合比对：base 里有而产物没有的模型，只有「被方块引用」才是真缺失；
+    # 未被引用的多为 base 里历次烘焙残留的模型（viewer 永不请求），只提示不判失败。
+    try:
+        base_models = (load_json(os.path.join(ROOT, 'assets', 'models.json')) or {}).get('models') or {}
+    except Exception:
+        base_models = {}
+    if base_models:
+        drift = sorted(set(base_models) - set(models))
+        if drift:
+            blocks = (load_json(os.path.join(out, 'blocks.json')) or {}).get('blocks') or {}
+            referenced = set()
+            for defn in blocks.values():
+                for mid in _referenced_models(defn):
+                    referenced.add(mid.split('#', 1)[0])
+            live = [mid for mid in drift if mid.split('#', 1)[0] in referenced]
+            dead = [mid for mid in drift if mid.split('#', 1)[0] not in referenced]
+            if live:
+                fail('产物缺少 base 里 %d 个仍被方块引用的模型（例：%s）'
+                     % (len(live), ', '.join(live[:5])))
+            if dead:
+                warn('base 有 %d 个模型在产物中不存在（均未被 blocks.json 引用，'
+                     '属 base 残留、不影响 viewer；例：%s）'
+                     % (len(dead), ', '.join(dead[:4])))
 
 
 # ---------------------------------------------------------------------------
