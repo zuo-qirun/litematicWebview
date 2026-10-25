@@ -6,7 +6,7 @@
     python tools\\bake\\verify_pack.py --pack tests\\packs\\texture-only.zip --out _dl\\_work_pack\\out_texture-only
     python tools\\bake\\verify_pack.py --pack <zip> --out <dir> -v --json _dl\\verify.json
 
-对「pack.py 烘出来的 assets 输出」做独立验收，共 8 项：
+对「pack.py 烘出来的 assets 输出」做独立验收，共 10 项：
   1. 文件齐全：manifest/blocks/models/lang/meta/atlas.png（成功烘焙时还应有 report.json）。
   2. 图集可开：PNG 为 RGBA 方形 2 的幂，尺寸与 manifest.atlas.size 一致。
   3. manifest / meta 自洽：format、dataVersion、textureScale、blockCount/modelCount/quadCount。
@@ -16,7 +16,10 @@
   6. lang.json：zh_cn / en_us 结构合法，en_us 覆盖全部方块（block.<path> 键）。
   7. 5 个 .litematic fixture 的 palette 100% 可解析（blocks -> models -> quads -> uv）。
   8. 材质包覆盖的纹理确实出现在产物图集里（像素级比对，仅检查被模型引用的纹理）；
-     另外校验 report.json 的 overrides/stats 与 zip 实际内容一致。
+     另外校验 report.json 的 overrides/overridesDetail/stats 与 zip 实际内容一致，
+     并把 report.warnings（如 pack.mcmeta 版本不匹配）原样当警告打印。
+  9. 继承箱子实体模型（post_entity_models.py）生效。
+ 10. manifest 继承 base 且 models/ 分片齐全、modelsCount 与实际一致（viewer 按需加载契约）。
 
 退出码：0 = 全部通过（允许警告），1 = 有失败项。
 """
@@ -455,7 +458,7 @@ def check_pack_textures(pack_path, out, report, blocks, models, atlas, atlas_siz
     not_ref = []
     mismatch = 0
     for key in layer.textures:
-        tex = key[len(P.ASSET_HEAD + 'textures/'):-len('.png')]
+        tex = P.texture_key_to_name(key)
         if tex not in ref_texs:
             not_ref.append(tex)
             continue
@@ -503,16 +506,43 @@ def check_pack_textures(pack_path, out, report, blocks, models, atlas, atlas_siz
         return
     if report.get('ok') is not True:
         fail('report.json ok 不为 true：%r' % report.get('ok'))
+    # 烘焙端会把 pack.mcmeta 的版本兼容问题写进 warnings（如 pack_format 41 > 基准 34）
+    for wmsg in report.get('warnings') or []:
+        warn('report.warnings: %s' % wmsg)
+    mcmeta = (report.get('pack') or {}).get('mcmeta') or {}
+    if mcmeta:
+        sf = mcmeta.get('supportedFormats')
+        print('   pack.mcmeta：pack_format=%r supported_formats=%r 兼容=%r'
+              % (mcmeta.get('packFormat'), sf, mcmeta.get('compatible')))
     expect = collections.OrderedDict([
         ('blockstates', len(layer.blockstates)),
         ('models', len(layer.models)),
         ('textures', len(layer.textures)),
         ('lang', len(layer.lang)),
     ])
-    got = report.get('overrides') or {}
-    for k, v in expect.items():
-        if int(got.get(k, -1)) != v:
-            fail('report.overrides.%s=%r，与 zip 实际 %d 不一致' % (k, got.get(k), v))
+    # 新版 report：overrides 是数字（受影响条目总数），明细在 overridesDetail；
+    # 兼容旧版：overrides 是对象。
+    detail = report.get('overridesDetail')
+    if not isinstance(detail, dict):
+        detail = report.get('overrides') if isinstance(report.get('overrides'), dict) else None
+        if detail is not None:
+            warn('report.overrides 是旧版对象结构（缺少 overridesDetail），按旧格式校验')
+    if detail is None:
+        fail('report 缺少 overridesDetail（无法核对 zip 实际条目数）')
+    else:
+        for k, v in expect.items():
+            if int(detail.get(k, -1)) != v:
+                fail('report.overridesDetail.%s=%r，与 zip 实际 %d 不一致'
+                     % (k, detail.get(k), v))
+    total = report.get('overrides')
+    if isinstance(total, int) and not isinstance(total, bool):
+        if total != sum(expect.values()):
+            fail('report.overrides=%d，与 zip 实际受影响条目总数 %d 不一致'
+                 % (total, sum(expect.values())))
+    elif detail is None:
+        pass
+    else:
+        fail('report.overrides 应为数字（受影响条目总数），实际 %r' % (total,))
     stats = report.get('stats') or {}
     quads = sum(len(m.get('quads') or []) for m in (models or {}).values())
     if int(stats.get('blocks', -1)) != len(blocks or {}):
@@ -526,8 +556,8 @@ def check_pack_textures(pack_path, out, report, blocks, models, atlas, atlas_siz
     if int(stats.get('atlasSize', -1)) != atlas_size:
         fail('report.stats.atlasSize=%r 与实际 %d 不一致'
              % (stats.get('atlasSize'), atlas_size))
-    print('   report: ok=true overrides=%s stats=%s'
-          % (dict(got), dict(stats)))
+    print('   report: ok=true overrides=%r（明细 %r） stats=%r'
+          % (total, dict(detail or {}), dict(stats)))
     layer.close()
 
 
@@ -597,6 +627,77 @@ def check_entity_models(models, blocks, report):
 
 
 # ---------------------------------------------------------------------------
+# 10. manifest 继承 + 模型分片
+# ---------------------------------------------------------------------------
+def encode_model_id(model_id):
+    """与 bake.model_file_name / src/render/db.js encodeModelId 完全一致。"""
+    return str(model_id).replace('/', '$').replace('#', '@').replace(',', '!')
+
+
+def check_manifest_shards(out, manifest, models):
+    print('-' * 78)
+    print('10. manifest 继承与模型分片（viewer 按需加载契约）')
+    if not isinstance(manifest, dict) or not manifest:
+        fail('缺少 manifest.json，无法检查模型分片')
+        return
+    base_manifest = {}
+    try:
+        base_manifest = load_json(os.path.join(ROOT, 'assets', 'manifest.json'))
+    except Exception:
+        warn('找不到内置 assets/manifest.json，跳过 manifest 继承比对')
+    for key in (base_manifest or {}):
+        if key not in manifest:
+            warn('manifest 缺少内置 base 的字段 %r（viewer 可能取不到）' % key)
+    mode = manifest.get('modelsMode')
+    models_dir_name = manifest.get('modelsDir') or 'models'
+    declared = manifest.get('modelsCount')
+    if mode != 'files':
+        warn('manifest.modelsMode=%r（不是 files，viewer 会整体下载 models.json）' % mode)
+        return
+    models_dir = os.path.join(out, models_dir_name)
+    if not os.path.isdir(models_dir):
+        fail('manifest.modelsMode=files 但缺少分片目录：%s' % (models_dir,))
+        return
+    names = [n for n in os.listdir(models_dir) if n.endswith('.json')]
+    count = len(names)
+    models = models or {}
+    if not isinstance(declared, int) or isinstance(declared, bool):
+        fail('manifest.modelsCount=%r 缺失或非法' % (declared,))
+    elif declared != count:
+        fail('manifest.modelsCount=%d 与实际分片数 %d 不一致' % (declared, count))
+    elif declared != len(models):
+        fail('manifest.modelsCount=%d 与 models.json 模型数 %d 不一致'
+             % (declared, len(models)))
+    else:
+        print('   modelsMode=files modelsDir=%s 分片 %d 个（与 modelsCount / models.json 一致）'
+              % (models_dir_name, count))
+    # 每个模型都必须有对应分片（缺一个 viewer 就整体回退到 9MB 的 models.json）
+    have = set(n[:-len('.json')] for n in names)
+    missing = [mid for mid in models if encode_model_id(mid) not in have]
+    if missing:
+        fail('%d 个模型缺少分片（例：%s）' % (len(missing), ', '.join(missing[:5])))
+    # 抽查分片内容与 models.json 一致（后处理修改模型后忘了同步分片的兜底）
+    import random
+    ids = sorted(models)
+    sample = ids if len(ids) <= 200 else random.Random(7).sample(ids, 200)
+    bad = 0
+    for mid in sample:
+        path = os.path.join(models_dir, encode_model_id(mid) + '.json')
+        try:
+            got = load_json(path)
+        except Exception:
+            bad += 1
+            continue
+        if got != (models[mid].get('quads') or []):
+            bad += 1
+    if bad:
+        fail('%d/%d 个抽查分片的内容与 models.json 不一致（先跑 pack.py 的同步修复）'
+             % (bad, len(sample)))
+    else:
+        print('   抽查 %d 个分片：内容与 models.json 一致' % len(sample))
+
+
+# ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
 def main(argv=None):
@@ -652,6 +753,7 @@ def main(argv=None):
     if atlas is not None:
         check_pack_textures(args.pack, out, report, blocks, models, atlas, atlas_size)
     check_entity_models(models, blocks, report)
+    check_manifest_shards(out, manifest, models)
 
     print('=' * 78)
     if FAIL:

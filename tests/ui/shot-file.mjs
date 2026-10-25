@@ -13,7 +13,7 @@ const flag = (n, d) => {
   const i = argv.indexOf(n);
   return i >= 0 ? argv[i + 1] : d;
 };
-const file = argv.find((a) => !a.startsWith("--") && a !== flag("--dist") && a !== flag("--port") && a !== flag("--out") && a !== flag("--view"));
+const file = argv.find((a) => !a.startsWith("--") && a !== flag("--dist") && a !== flag("--port") && a !== flag("--out") && a !== flag("--view") && a !== flag("--slice"));
 if (!file) {
   console.error("用法: node tests/ui/shot-file.mjs <file.litematic> [--dist 14] [--port 5195] [--out name.png] [--view iso]");
   process.exit(2);
@@ -23,6 +23,8 @@ const DIST = Number(flag("--dist", "14"));
 const PORT = Number(flag("--port", "5195"));
 const OUT = join(HERE, "_shots", flag("--out", "shot-" + basename(FILE, ".litematic") + ".png"));
 const VIEW = flag("--view", "iso");
+const SLICE = flag("--slice", null);
+const PICK = argv.includes("--pick");
 const CHROMES = [
   "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
   "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
@@ -99,7 +101,33 @@ try {
     DIST,
     VIEW,
   );
+  const before = await page.evaluate(() => ({
+    drawn: window.__VIEWER__.scene().drawnInstances(),
+    full: window.__VIEWER__.scene().meshes.reduce((a, m) => a + (m.userData.fullCount != null ? m.userData.fullCount : m.count), 0),
+    entityLabels: window.__VIEWER__.state().entityLabels,
+    entityLabelsVisible: window.__VIEWER__.state().entityLabelsVisible,
+  }));
+  if (SLICE !== null) {
+    const level = await page.evaluate((lv) => window.__VIEWER__.scene().setSlice(true, Number(lv)), SLICE);
+    console.log("切片 level =", level);
+  }
+  if (PICK) {
+    const vp = page.viewport();
+    const info = await page.evaluate((cx, cy) => {
+      const sc = window.__VIEWER__.scene();
+      sc.applyPreset("iso");
+      sc.frameAll();
+      const hit = sc.pickAt(cx, cy);
+      if (!hit) return null;
+      sc.setSelected(hit.x, hit.y, hit.z, true, hit.stateKey);
+      return { hit, scale: sc.selBox.scale.toArray().map((v) => +v.toFixed(3)), pos: sc.selBox.position.toArray().map((v) => +v.toFixed(3)) };
+    }, Math.round(vp.width / 2), Math.round(vp.height / 2));
+    console.log("拾取:", JSON.stringify(info));
+    await page.evaluate(() => window.__VIEWER__.scene().frameAll());
+  }
   await new Promise((r) => setTimeout(r, 1200));
+  const after = await page.evaluate(() => ({ drawn: window.__VIEWER__.scene().drawnInstances() }));
+  console.log("实例:", JSON.stringify(before), "→ 切片后 drawn =", after.drawn);
   await page.screenshot({ path: OUT });
   console.log("截图:", OUT, "| console errors:", errs.length ? errs.slice(0, 3) : "无");
 } finally {

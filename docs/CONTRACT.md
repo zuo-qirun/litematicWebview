@@ -288,6 +288,19 @@ export class BlockDB {
 - `alphaTest = 0.5` 用于玻璃/树叶/植物等 cutout，避免排序问题。
 - 方块→状态的字符串格式必须与 `Region.palette` 完全一致（直接当 key 用，不要再解析再序列化）。
 
+### 3.1 运行时合成（资产里没有的东西，渲染器自己补）
+
+以下几类在原版是「代码生成」的，烘焙产物里没有对应几何，必须由渲染器按状态字符串合成：
+
+| 类别 | 规则 | 实现位置 |
+| --- | --- | --- |
+| 流体高度 | `minecraft:water` / `minecraft:lava` 按 `level` 决定高度：`level>=8`（下落柱）→ 1；否则 `(8-level)/9`。`minecraft:bubble_column` → 水、满高。上方仍是同种流体时取满格，避免层间裂缝。 | `src/render/fluids.js` `fluidInfo()` |
+| 含水方块 | `props.waterlogged === "true"` → 在方块内叠一层 8/9 高的水，水平内缩 0.004 避免与方块面共面闪烁。 | `src/render/fluids.js` `waterloggedInfo()` |
+| 实体 | 不做几何，只画名字标签 Sprite；位置 = `region.position + entity.pos`；默认只标 mob/vehicle/other（`frame`/`item` 类成排装饰跳过），`E` 键开合。 | `src/render/entities.js` |
+| 双箱子 | 依赖 `blocks.json` 里 `when:{facing,type}` 的变体（`type=left/right` 各 4 朝向），**带 `type` 的变体必须排在只有 `facing` 的变体前面**，因为 `db.resolve()` 取第一个命中项、且 `propsMatch()` 只校验 `when` 里出现的键。 | `tools/bake/post_entity_models.py` |
+| 切片 | 不用 `renderer.clippingPlanes`（会切出背面 = 视觉重叠）；实例按 y 递增写入并记录「y → 累积数量」表，切片时直接截断 `mesh.count`。 | `src/render/scene.js` `_applySlice()` |
+| 选择框 | 用该状态几何的 `boundingBox` 定位/缩放 hover 框与选中框，不完整方块不再套整格。 | `src/render/scene.js` `_fitSelBox()` |
+
 ## 4. UI 契约（`src/ui/`）
 
 - 单页；中文界面；深色主题；`index.html` 由 Lead 维护骨架，UI 用 `#app` 挂载。

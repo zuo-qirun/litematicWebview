@@ -31,6 +31,7 @@ export function buildShell(root) {
         <button class="tbtn" type="button" data-act="slice" aria-pressed="false" title="按层切片 ( [ / ] )">${icons.slice}<span>切片</span></button>
         <button class="tbtn is-on" type="button" data-act="grid" aria-pressed="true" title="显示网格 (G)">${icons.grid}<span>网格</span></button>
         <button class="tbtn" type="button" data-act="wire" aria-pressed="false" title="线框模式 (X)">${icons.wire}<span>线框</span></button>
+        <button class="tbtn is-on" type="button" data-act="entities" aria-pressed="true" title="显示实体标记 (E)">${icons.eye}<span>实体</span></button>
       </div>
 
       <div class="tb-right">

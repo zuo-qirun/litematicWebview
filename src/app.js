@@ -152,6 +152,9 @@ const api = {
       paletteSize, // 别名：e2e/oracle 用 paletteSize 命名
       blockEntityCount: st.blockEntityCount || 0,
       entityCount: st.entityCount || 0,
+      entityLabels: sc?.entityCount || 0,
+      entityLabelsVisible: sc ? sc.entitiesOn !== false : true,
+      sliceEnabled: !!(sc && sc.slice && sc.slice.enabled),
       tickCount,
       volume: st.volume || regionVol,
       drawCalls: sc?.info?.drawCalls || 0,
@@ -841,7 +844,7 @@ function onHover(hit) {
     return;
   }
   state.lastHit = hit;
-  scene.setHover(hit.x, hit.y, hit.z, true);
+  scene.setHover(hit.x, hit.y, hit.z, true, hit.stateKey);
   if (!state.pinned && state.inspector && state.pickCtx) {
     const info = describeBlock(hit, state.pickCtx);
     if (info) state.inspector.show(info, { pinned: false });
@@ -861,7 +864,7 @@ function selectHit(hit) {
     return;
   }
   state.selectedHit = hit;
-  scene.setSelected(hit.x, hit.y, hit.z, true);
+  scene.setSelected(hit.x, hit.y, hit.z, true, hit.stateKey);
   if (state.inspector && state.pickCtx) {
     const info = describeBlock(hit, state.pickCtx);
     if (info) state.inspector.show(info, { pinned: state.pinned });
@@ -895,7 +898,7 @@ function onLegendClick(entry) {
   const n = scene.highlightState(entry.stateKey);
   if (entry.first) {
     scene.focusBlock(entry.first.x, entry.first.y, entry.first.z);
-    scene.setSelected(entry.first.x, entry.first.y, entry.first.z, true);
+    scene.setSelected(entry.first.x, entry.first.y, entry.first.z, true, entry.stateKey);
   }
   if (state.toaster) {
     if (n > 0) state.toaster.info(`${entry.name}`, `${fmtInt(n)} 个实例已高亮`);
@@ -981,6 +984,13 @@ function bindUi(refs, scene, picker, inspector, toaster) {
           const on = !scene.wireframe;
           scene.setWireframe(on);
           setPressed(btn, on);
+          break;
+        }
+        case "entities": {
+          const on = scene.entitiesOn === false;
+          scene.setEntitiesVisible(on);
+          setPressed(btn, on);
+          toaster.info(on ? "显示实体标记" : "隐藏实体标记");
           break;
         }
         case "open-inspector":
@@ -1158,6 +1168,13 @@ function bindUi(refs, scene, picker, inspector, toaster) {
         const on = !scene.wireframe;
         scene.setWireframe(on);
         for (const b of refs.actButtons) if (b.dataset.act === "wire") setPressed(b, on);
+        break;
+      }
+      case "e":
+      case "E": {
+        const on = scene.entitiesOn === false;
+        scene.setEntitiesVisible(on);
+        for (const b of refs.actButtons) if (b.dataset.act === "entities") setPressed(b, on);
         break;
       }
       case "o":

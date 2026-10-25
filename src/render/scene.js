@@ -11,6 +11,8 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { buildStateGeometry, missingGeometry } from "./geometry.js";
+import { fluidInfo, waterloggedInfo, isPureFluid, FLUID_INSET } from "./fluids.js";
+import { createEntityLayer } from "./entities.js";
 
 export const ACCENT = 0x7ee787;
 export const ACCENT_HEX = "#7ee787";
@@ -21,6 +23,26 @@ const ISO_DIR = new THREE.Vector3(1, 0.82, 1).normalize();
 const AIR = new Set(["minecraft:air", "minecraft:cave_air", "minecraft:void_air", "air"]);
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+
+// 实例是按 y 递增写入的：顺手记下「每层有多少个实例」，切片时按层截断 mesh.count。
+function pushRun(slot, y) {
+  const r = slot.runs;
+  if (!r.length || r[r.length - 1][0] !== y) r.push([y, 0]);
+  r[r.length - 1][1]++;
+}
+
+/** [[y,count],...] → Int32Array([y0,upto0,y1,upto1,...]) */
+function toLevels(runs) {
+  if (!runs || !runs.length) return null;
+  const out = new Int32Array(runs.length * 2);
+  let acc = 0;
+  for (let i = 0; i < runs.length; i++) {
+    acc += runs[i][1];
+    out[i * 2] = runs[i][0];
+    out[i * 2 + 1] = acc;
+  }
+  return out;
+}
 
 /** 把 palette 条目规范化成状态字符串 */
 export function paletteStateKey(entry) {
@@ -46,6 +68,8 @@ export class ViewerScene {
     this.wireframe = false;
     this.gridOn = true;
     this.shadowOn = true;
+    this.entitiesOn = true;
+    this._stateBox = new Map();
     this.showRegionBorders = false;
     this.slice = { enabled: false, level: 0 };
     this.db = null;
@@ -256,9 +280,18 @@ export class ViewerScene {
     this.materials = {
       opaque: new THREE.MeshBasicMaterial({ ...base }),
       cutout: new THREE.MeshBasicMaterial({ ...base, alphaTest: 0.5, side: THREE.DoubleSide }),
+      // 玻璃类：半透明但**写深度**（原版半透明方块也写），否则玻璃后面的方块会透过来，
+      // 看起来像"玻璃渲染错了"。
       translucent: new THREE.MeshBasicMaterial({
-        ...base, transparent: true, depthWrite: false, alphaTest: 0, side: THREE.DoubleSide,
+        ...base, transparent: true, depthWrite: true, alphaTest: 0, side: THREE.DoubleSide,
       }),
+      // 水：半透明、不写深度，但排在普通半透明（玻璃）之前，避免玻璃水面互相吞。
+      water: new THREE.MeshBasicMaterial({
+        ...base, transparent: true, opacity: 0.78, depthWrite: true, alphaTest: 0,
+        side: THREE.DoubleSide,
+      }),
+      // 岩浆：不透明液体，用双面 + 不写 alpha，视觉上更接近原版。
+      lava: new THREE.MeshBasicMaterial({ ...base, side: THREE.DoubleSide }),
       missing: new THREE.MeshBasicMaterial({
         color: 0xff3d9a, transparent: true, opacity: 0.45, depthWrite: false,
         side: THREE.DoubleSide, wireframe: true, fog: false,
@@ -266,7 +299,9 @@ export class ViewerScene {
     };
     this.materials.opaque.renderOrder = 0;
     this.materials.cutout.renderOrder = 1;
+    this.materials.water.renderOrder = 2;
     this.materials.translucent.renderOrder = 3;
+    this.materials.lava.renderOrder = 1;
     this.materials.missing.renderOrder = 4;
     return this.materials;
   }
@@ -278,6 +313,13 @@ export class ViewerScene {
       m.dispose && m.dispose();
     }
     this.meshes.length = 0;
+    if (this.fluidMeshes) this.fluidMeshes.length = 0;
+    this._stateBox.clear();
+    if (this._entityLayer) {
+      this.group.remove(this._entityLayer.group);
+      this._entityLayer.dispose();
+      this._entityLayer = null;
+    }
     this.regionGroups.clear();
     this.regionList = [];
     this.hiddenRegionNames.clear();
@@ -440,15 +482,33 @@ export class ViewerScene {
     }
 
     // ---- 3. 分配并填充实例矩阵
+    //
+    // 流体处理：`minecraft:water[layer=N]` 这类状态在原版里高度由 level 运行时决定
+    // （不在模型数据里），烘焙出来的 water/lava 模型只是整方块占位。所以这里对
+    // 「纯流体」状态改用独立流体层（单位立方体按 y 缩放），对「含水方块」在方块
+    // 自身几何之外再叠一层 8/9 高的水。
+    this.fluidMeshes = [];
     for (let ki = 0; ki < regions.length; ki++) {
       const rg = regions[ki];
       const rs = regStats[ki];
       const abs = rg.absSize || rg.size || { x: 0, y: 0, z: 0 };
       const sx = rs.sx, sy = rs.sy, sz = rs.sz;
-      void abs; void sy;
+      void abs;
       const palette = rg.palette || [];
       const slotByState = new Map();
-      for (const [sk, n] of rs.counts) slotByState.set(sk, { data: new Float32Array(n * 16), n: 0 });
+      // 纯流体不建方块槽位；含水的方块本体照常建槽位
+      const fluidCap = { water: 0, lava: 0 };
+      for (const [sk, n] of rs.counts) {
+        const fi = fluidInfo(sk);
+        if (fi) { fluidCap[fi.kind] += n; continue; }
+        slotByState.set(sk, { data: new Float32Array(n * 16), n: 0, runs: [] });
+        const wl = waterloggedInfo(sk);
+        if (wl) fluidCap[wl.kind] += n;
+      }
+      const fluidSlots = {};
+      for (const kind of ["water", "lava"]) {
+        if (fluidCap[kind]) fluidSlots[kind] = { data: new Float32Array(fluidCap[kind] * 16), n: 0, runs: [] };
+      }
       const palSlot = new Array(palette.length);
       for (let pi = 0; pi < palette.length; pi++) {
         if (!rs.palCount[pi]) continue;
@@ -459,20 +519,65 @@ export class ViewerScene {
       const sxz = sx * sz;
       const px = rs.position.x || 0, py = rs.position.y || 0, pz = rs.position.z || 0;
       const ox = this.offset.x, oz = this.offset.z;
+      const inset = FLUID_INSET, wScale = 1 - inset * 2;
       for (let i = 0; i < volume; i++) {
         const pi = indices[i];
-        const slot = pi < palette.length ? palSlot[pi] : undefined;
-        if (!slot) continue;
         const x = i % sx;
         const z = ((i / sx) | 0) % sz;
         const y = (i / sxz) | 0;
-        const o = slot.n * 16;
-        const d = slot.data;
-        d[o] = 1; d[o + 5] = 1; d[o + 10] = 1; d[o + 15] = 1;
-        d[o + 12] = px + x + ox;
-        d[o + 13] = py + y + oy;
-        d[o + 14] = pz + z + oz;
-        slot.n++;
+        const sk = pi < rs.palKeys.length ? rs.palKeys[pi] : null;
+
+        // 纯流体：只画流体层
+        const fi = sk ? fluidInfo(sk) : null;
+        if (fi) {
+          const slot = fluidSlots[fi.kind];
+          if (slot) {
+            let h = fi.height;
+            // 上方还是水 → 用整格高，避免每层水面之间露出缝
+            if (h < 1 && y + 1 < sy) {
+              const up = i + sxz;
+              const upSk = up < volume ? rs.palKeys[indices[up]] : null;
+              if (upSk && fluidInfo(upSk)) h = 1;
+            }
+            const o = slot.n * 16;
+            const d = slot.data;
+            d[o] = 1; d[o + 5] = h; d[o + 10] = 1; d[o + 15] = 1;
+            d[o + 12] = px + x + ox;
+            d[o + 13] = py + y + oy;
+            d[o + 14] = pz + z + oz;
+            slot.n++;
+            pushRun(slot, py + y + oy);
+          }
+          continue;
+        }
+
+        const slot = pi < palette.length ? palSlot[pi] : undefined;
+        if (!slot) continue;
+        {
+          const o = slot.n * 16;
+          const d = slot.data;
+          d[o] = 1; d[o + 5] = 1; d[o + 10] = 1; d[o + 15] = 1;
+          d[o + 12] = px + x + ox;
+          d[o + 13] = py + y + oy;
+          d[o + 14] = pz + z + oz;
+          slot.n++;
+          pushRun(slot, py + y + oy);
+        }
+        // 含水方块：叠一层 8/9 高的水，水平内缩一点避免与方块面共面
+        const wl = sk ? waterloggedInfo(sk) : null;
+        if (wl) {
+          const fslot = fluidSlots[wl.kind];
+          if (fslot) {
+            const o = fslot.n * 16;
+            const d = fslot.data;
+            d[o] = wScale; d[o + 5] = wl.height; d[o + 10] = wScale; d[o + 15] = 1;
+            d[o + 12] = px + x + ox + inset;
+            d[o + 13] = py + y + oy;
+            d[o + 14] = pz + z + oz + inset;
+            fslot.n++;
+            pushRun(fslot, py + y + oy);
+          }
+        }
       }
       // 建 InstancedMesh
       const group = this.regionGroups.get(rs.name);
@@ -486,14 +591,47 @@ export class ViewerScene {
         inst.instanceMatrix.needsUpdate = true;
         inst.frustumCulled = false;
         inst.computeBoundingSphere();
+        if (built && geo.boundingBox && !this._stateBox.has(sk)) {
+          this._stateBox.set(sk, {
+            min: { x: geo.boundingBox.min.x, y: geo.boundingBox.min.y, z: geo.boundingBox.min.z },
+            max: { x: geo.boundingBox.max.x, y: geo.boundingBox.max.y, z: geo.boundingBox.max.z },
+          });
+        }
         inst.userData = {
           stateKey: sk,
           regionName: rs.name,
           regionIndex: ki,
           quadCount: built ? built.quadCount : 0,
+          yLevels: toLevels(slot.runs),
+          fullCount: slot.n,
         };
         this.group.add(inst);
         this.meshes.push(inst);
+        if (group) group.push(inst);
+      }
+      // 流体层：每种流体一个 InstancedMesh（用该流体的烘焙几何当单位立方体）
+      for (const kind of ["water", "lava"]) {
+        const slot = fluidSlots[kind];
+        if (!slot || !slot.n) continue;
+        const built = buildStateGeometry(db, `minecraft:${kind}`);
+        const geo = built ? built.geometry : new THREE.BoxGeometry(1, 1, 1);
+        const inst = new THREE.InstancedMesh(geo, mats[kind], slot.n);
+        inst.instanceMatrix = new THREE.InstancedBufferAttribute(slot.data.subarray(0, slot.n * 16), 16);
+        inst.instanceMatrix.needsUpdate = true;
+        inst.frustumCulled = false;
+        inst.computeBoundingSphere();
+        inst.userData = {
+          stateKey: `minecraft:${kind}`,
+          regionName: rs.name,
+          regionIndex: ki,
+          quadCount: built ? built.quadCount : 0,
+          fluidKind: kind,
+          yLevels: toLevels(slot.runs),
+          fullCount: slot.n,
+        };
+        this.group.add(inst);
+        this.meshes.push(inst);
+        this.fluidMeshes.push(inst);
         if (group) group.push(inst);
       }
       if (onProgress) onProgress(0.5 + ((ki + 1) / regions.length) * 0.35, `生成实例 ${rs.name}`);
@@ -501,10 +639,20 @@ export class ViewerScene {
     }
     const drawn = this.meshes.reduce((a, m) => a + m.count, 0);
 
-    // ---- 4. 体素栅格
+    // ---- 4. 实体标记（名字标签）
+    {
+      const extent = Math.max(this.bounds.sx, this.bounds.sy, this.bounds.sz) || 16;
+      const scale = clamp(extent / 34, 0.7, 3.4);
+      this._entityLayer = createEntityLayer(schematic, { offset: this.offset, scale });
+      this._entityLayer.group.visible = this.entitiesOn !== false;
+      this.group.add(this._entityLayer.group);
+      this.entityCount = this._entityLayer.count;
+    }
+
+    // ---- 5. 体素栅格
     this._buildVoxels(regions, regStats);
 
-    // ---- 5. Region 边框 / 地面网格 / 阴影
+    // ---- 6. Region 边框 / 地面网格 / 阴影
     this.empty = false; // 先落位：_buildGrid 会据此决定是否显示坐标轴
     this._buildRegionBoxes();
     this._buildGrid();
@@ -809,6 +957,13 @@ export class ViewerScene {
     this._needRender = true;
   }
 
+  /** 实体名字标签显隐（默认开；没有实体时无副作用） */
+  setEntitiesVisible(on) {
+    this.entitiesOn = !!on;
+    if (this._entityLayer) this._entityLayer.group.visible = this.entitiesOn;
+    this._needRender = true;
+  }
+
   highlightRegion(name, on) {
     if (!this._regionBoxes) return;
     const box = this._regionBoxes.get(name);
@@ -853,55 +1008,75 @@ export class ViewerScene {
   }
 
   _applySlice() {
-    if (!this.slice.enabled || this.empty) {
-      this.renderer.clippingPlanes = [];
-    } else {
-      // 模型底面贴 y = 0，保留 y <= level + 1
-      this.renderer.clippingPlanes = [new THREE.Plane(new THREE.Vector3(0, -1, 0), this.slice.level + 1)];
-      this.setHover(null, null, null, false);
+    // 不用裁剪面（clippingPlanes）：裁剪面切开的截面会露出背面，看起来像"模型重叠"。
+    // 实例是按 y 递增写入的，所以每个 mesh 记一份「y → 累积实例数」表，
+    // 切片时直接改 mesh.count，等于把整层楼切掉，截面干净。
+    const on = this.slice.enabled && !this.empty;
+    for (const mesh of this.meshes) {
+      const ud = mesh.userData || {};
+      const levels = ud.yLevels;
+      const full = ud.fullCount != null ? ud.fullCount : mesh.count;
+      mesh.count = on && levels ? this._countUpTo(levels, this.slice.level) : full;
     }
+    this.renderer.clippingPlanes = [];
+    if (on) this.setHover(null, null, null, false);
     this._needRender = true;
+  }
+
+  /** levels 是 Int32Array([y0, upto0, y1, upto1, ...])，y 递增；返回最后一个 y<=level 的 upto */
+  _countUpTo(levels, level) {
+    let lo = 0, hi = (levels.length >> 1) - 1, best = 0;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (levels[mid * 2] <= level) { best = levels[mid * 2 + 1]; lo = mid + 1; } else hi = mid - 1;
+    }
+    return best;
   }
 
   /** 当前实际参与绘制的实例数（受 region 显隐 + 切片影响） */
   drawnInstances() {
-    if (!this._regStats) return 0;
     let n = 0;
-    const maxLevel = Math.max(0, Math.ceil(this.bounds.sy) - 1);
-    for (const rs of this._regStats) {
-      if (this.hiddenRegionNames.has(rs.name)) continue;
-      if (!this.slice.enabled) {
-        let t = 0;
-        for (const c of rs.counts.values()) t += c;
-        n += t;
-      } else {
-        const idx = clamp(this.slice.level + 1, 0, rs.cumY.length - 1);
-        n += rs.cumY[idx];
-      }
-    }
-    void maxLevel;
+    for (const m of this.meshes) n += m.count;
     return n;
   }
 
   // ------------------------------------------------------------ 高亮
-  setHover(x, y, z, visible = true) {
+  /** 选择框贴合方块实际几何体积（台阶/栅栏/火把等不完整方块不再用整格框） */
+  _fitSelBox(box, x, y, z, stateKey) {
+    const bb = stateKey ? this._stateBox.get(stateKey) : null;
+    const bx = x + this.offset.x, by = y + this.offset.y, bz = z + this.offset.z;
+    if (bb) {
+      const sx = Math.max(bb.max.x - bb.min.x, 0.02) + 0.02;
+      const sy = Math.max(bb.max.y - bb.min.y, 0.02) + 0.02;
+      const sz = Math.max(bb.max.z - bb.min.z, 0.02) + 0.02;
+      box.scale.set(sx, sy, sz);
+      box.position.set(
+        bx + (bb.min.x + bb.max.x) / 2,
+        by + (bb.min.y + bb.max.y) / 2,
+        bz + (bb.min.z + bb.max.z) / 2,
+      );
+    } else {
+      box.scale.set(1.002, 1.002, 1.002);
+      box.position.set(bx + 0.5, by + 0.5, bz + 0.5);
+    }
+    box.visible = true;
+    this._needRender = true;
+  }
+
+  setHover(x, y, z, visible = true, stateKey = null) {
     if (!visible || x === null || x === undefined) {
       if (this.hoverBox.visible) { this.hoverBox.visible = false; this._needRender = true; }
       return;
     }
-    this.hoverBox.position.set(x + 0.5 + this.offset.x, y + 0.5 + this.offset.y, z + 0.5 + this.offset.z);
-    this.hoverBox.visible = true;
-    this._needRender = true;
+    this._fitSelBox(this.hoverBox, x, y, z, stateKey);
   }
 
-  setSelected(x, y, z, visible = true) {
+  setSelected(x, y, z, visible = true, stateKey = null) {
     if (!visible || x === null || x === undefined) {
       if (this.selBox.visible) { this.selBox.visible = false; this._needRender = true; }
       return;
     }
-    this.selBox.position.set(x + 0.5 + this.offset.x, y + 0.5 + this.offset.y, z + 0.5 + this.offset.z);
-    this.selBox.visible = true;
-    this._needRender = true;
+    this._fitSelBox(this.selBox, x, y, z, stateKey);
   }
 
   /** 强调某方块状态的全部实例（图例点击） */

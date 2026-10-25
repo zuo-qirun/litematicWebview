@@ -78,13 +78,35 @@ def tex_layout(u0, v0, w, h, d):
 
 
 # 原版 ChestModel 的三个 part：(名字, (x0,y0,z0,x1,y1,z1), texOffs, (w,h,d))
+# 这些是「原版坐标系」：锁扣朝 +Z，最后统一用 BASE_STATE_Y 转到朝北。
 PARTS = (
     ('bottom', (1, 0, 1, 15, 10, 15), (0, 19), (14, 10, 14)),
     ('lid', (1, 9, 1, 15, 14, 15), (0, 0), (14, 5, 14)),
     ('lock', (7, 7, 15, 9, 11, 16), (0, 0), (2, 4, 1)),
 )
 
-# 方块 -> (纹理 id, jar 内路径, 模型 id 基名)
+# 双箱的两个半块：
+#   最终朝北时，大箱子横跨 x 1..31，西半（type=right）占本方块 x 1..16、东半
+#   （type=left）占 x 0..15，两块在方块边界处严丝合缝。这里给的是**原版坐标系**
+#   （锁扣朝 +Z），所以还要过一遍 BASE_STATE_Y=180 的预旋转（x → 16-x）：
+#     西半 x 1..16  ← 预旋转前 x 0..15
+#     东半 x 0..15  ← 预旋转前 x 1..16
+#   180° 旋转会把东西面互换（uv 仍跟着原来的面走），因此：
+#     西半的接缝面最终朝东 → 用 normal_left 纹理（它把 west 面涂透明）
+#     东半的接缝面最终朝西 → 用 normal_right 纹理（它把 east 面涂透明）
+#   锁扣只让西半画在接缝上（原版两半各画一半，视觉等价且避免重复几何）。
+PARTS_WEST = (                                    # 最终占 x 1..16，接缝在东侧
+    ('bottom', (0, 0, 1, 15, 10, 15), (0, 19), (15, 10, 14)),
+    ('lid', (0, 9, 1, 15, 14, 15), (0, 0), (15, 5, 14)),
+    ('lock', (-1, 7, 15, 1, 11, 16), (0, 0), (2, 4, 1)),
+)
+PARTS_EAST = (                                    # 最终占 x 0..15，接缝在西侧
+    ('bottom', (1, 0, 1, 16, 10, 15), (0, 19), (15, 10, 14)),
+    ('lid', (1, 9, 1, 16, 14, 15), (0, 0), (15, 5, 14)),
+)
+PARTS_BY_TYPE = {None: PARTS, 'right': PARTS_WEST, 'left': PARTS_EAST}
+
+# 我方复刻的方块（顺序即 blocks.json 变体生成顺序）
 BLOCKS = (
     ('minecraft:chest', 'entity/chest/normal', 'textures/entity/chest/normal.png', 'block/chest'),
     ('minecraft:trapped_chest', 'entity/chest/trapped', 'textures/entity/chest/trapped.png',
@@ -93,7 +115,33 @@ BLOCKS = (
      'block/ender_chest'),
 )
 
-SOURCE_BOX = (0, 0, 56, 43)   # 三张 64x64 纹理里真正被用到的区域（三个 part 的并集）
+# 渲染规格：每个「纹理 + 模型基名」一条——
+#   (所属方块 id, 纹理 id, jar 内路径, 模型 id 基名, type 属性值 or None)
+#
+# 双箱（type=left/right）：原版 ChestBlockEntityRenderer 对左/右半用的是**同一套 14 宽的
+# 单箱几何**，只是把朝向缝隙那一面在纹理里涂成透明（normal_left 的 west 面、
+# normal_right 的 east 面透明），因此几何完全不用改，只需换纹理即可拼成 30px 宽的双箱。
+# 对 facing=north：type=left 是东侧那块（缝隙在它的西侧），type=right 是西侧那块。
+# 末影箱没有 double 形态，只有单箱。
+MODELS = (
+    ('minecraft:chest', 'entity/chest/normal', 'textures/entity/chest/normal.png',
+     'block/chest', None),
+    ('minecraft:chest', 'entity/chest/normal_left', 'textures/entity/chest/normal_left.png',
+     'block/chest_west', 'right'),
+    ('minecraft:chest', 'entity/chest/normal_right', 'textures/entity/chest/normal_right.png',
+     'block/chest_east', 'left'),
+    ('minecraft:trapped_chest', 'entity/chest/trapped', 'textures/entity/chest/trapped.png',
+     'block/trapped_chest', None),
+    ('minecraft:trapped_chest', 'entity/chest/trapped_left',
+     'textures/entity/chest/trapped_left.png', 'block/trapped_chest_west', 'right'),
+    ('minecraft:trapped_chest', 'entity/chest/trapped_right',
+     'textures/entity/chest/trapped_right.png', 'block/trapped_chest_east', 'left'),
+    ('minecraft:ender_chest', 'entity/chest/ender', 'textures/entity/chest/ender.png',
+     'block/ender_chest', None),
+)
+
+SOURCE_BOX = (0, 0, 58, 43)   # 64x64 纹理里真正被用到的区域：58 = 双箱（w=15）的 2w+2d，
+                              # 43 = lid 顶带(d)+lid 侧带(h) + body 顶带(d) + body 侧带(h)
 BORDER = 1                    # 边缘复制像素
 TILE_W = SOURCE_BOX[2] + 2 * BORDER
 TILE_H = SOURCE_BOX[3] + 2 * BORDER
@@ -135,10 +183,10 @@ def _box_quads(box, tex_off, dims, tex, uv_off):
     return quads
 
 
-def chest_quads(tex, uv_off):
-    """原版 ChestModel 的 18 个 quad（锁扣朝 +Z / 南）。"""
+def chest_quads(tex, uv_off, parts=PARTS):
+    """原版 ChestModel 的 quad（锁扣朝 +Z / 南）。单箱 18 个；双箱半块 12 / 6 个。"""
     out = []
-    for _name, box, tex_off, dims in PARTS:
+    for _name, box, tex_off, dims in parts:
         out += _box_quads(box, tex_off, dims, tex, uv_off)
     return out
 
@@ -214,13 +262,14 @@ def self_test(models):
     print('  自检 OK：18/6 面顶点顺序与 assets/models.json 既有整方块一致')
 
 
-def check_quads(quads, atlas_size, where=''):
+def check_quads(quads, atlas_size, where='', pad=0):
+    """pad: 允许顶点超出 0..16 的幅度（双箱的锁扣会跨过方块边界 1px）。"""
     for i, q in enumerate(quads):
         p = q['p']
         if len(p) != 12:
             raise SystemExit('%s quad#%d p 长度 %d' % (where, i, len(p)))
         for v in p:
-            if not (0 <= float(v) <= 16):
+            if not (-pad <= float(v) <= 16 + pad):
                 raise SystemExit('%s quad#%d 坐标越界：%r' % (where, i, p))
         for v in q['uv']:
             if not (0 <= float(v) <= atlas_size):
@@ -303,7 +352,7 @@ def load_textures(jars, tex_dir):
     for j in jars:
         if os.path.exists(j):
             zips.append((os.path.basename(j), zipfile.ZipFile(j)))
-    for _block, _tex, jpath, kind_model in BLOCKS:
+    for _block, _tex, jpath, kind_model, _ty in MODELS:
         name = 'assets/minecraft/' + jpath
         img = None
         src = None
@@ -354,17 +403,18 @@ def model_file_name(model_id):
 def model_ids():
     """(base, state_y) -> 模型 id。本体模型正面向北（facing=north 用无后缀本体）。"""
     ids = {}
-    for _b, _t, _p, base in BLOCKS:
+    for _b, _t, _p, base, _ty in MODELS:
         for _fac, y in FACINGS:
             ids[(base, y)] = base if y == 0 else '%s#0,%d' % (base, y)
     return ids
 
 
 def build_models(uv_off, tex_by_model):
-    """生成 12 个模型：每个方块 4 个朝向。uv_off 已含边缘复制偏移。"""
+    """生成每个「纹理 × 朝向」的模型（7 个基名 × 4 朝向 = 28 个）。"""
     out = {}
-    for _block, tex, _p, base in BLOCKS:
-        quads_base = rotate_quads(chest_quads(tex, uv_off[base]), BASE_STATE_Y)
+    for _block, tex, _p, base, ty in MODELS:
+        parts = PARTS_BY_TYPE[ty]
+        quads_base = rotate_quads(chest_quads(tex, uv_off[base], parts), BASE_STATE_Y)
         for _fac, y in FACINGS:
             q = rotate_quads(quads_base, y) if y else [dict(x) for x in quads_base]
             for item in q:
@@ -427,7 +477,7 @@ def main(argv=None):
 
     rects = {}
     reuse = True
-    for _b, _t, _p, base in BLOCKS:
+    for _b, _t, _p, base, _ty in MODELS:
         r = prev.get(base)
         if not (isinstance(r, list) and len(r) == 2):
             reuse = False
@@ -440,10 +490,11 @@ def main(argv=None):
             reuse = False
             break
     if reuse:
-        rects = {base: (int(prev[base][0]), int(prev[base][1])) for _b, _t, _p, base in BLOCKS}
+        rects = {base: (int(prev[base][0]), int(prev[base][1]))
+                 for _b, _t, _p, base, _ty in MODELS}
         print('  复用上次的图集位置')
     else:
-        for _b, _t, _p, base in BLOCKS:
+        for _b, _t, _p, base, _ty in MODELS:
             # 留 1px 净空：在 (TILE+2HALO) 的空窗里放到 +HALO 处
             x, y = find_free(occ, TILE_W + 2 * HALO, TILE_H + 2 * HALO)
             x += HALO
@@ -451,7 +502,7 @@ def main(argv=None):
             rects[base] = (x, y)
             occ[max(0, y - HALO):y + TILE_H + HALO, max(0, x - HALO):x + TILE_W + HALO] = True
 
-    for _b, _t, _p, base in BLOCKS:
+    for _b, _t, _p, base, _ty in MODELS:
         x, y = rects[base]
         print('  atlas 位置 %-22s (%d, %d)  %dx%d' % (base, x, y, TILE_W, TILE_H))
 
@@ -459,7 +510,7 @@ def main(argv=None):
     had_alpha = atlas_img.mode in ('RGBA', 'LA') or 'transparency' in atlas_img.info
     arr = np.asarray(atlas_img.convert('RGBA'), dtype=np.uint8).copy()
     tiles = {}
-    for _b, _t, _p, base in BLOCKS:
+    for _b, _t, _p, base, _ty in MODELS:
         img, _src = tex_by_model[base]
         tile = tile_from_texture(img)
         tiles[base] = tile
@@ -483,29 +534,39 @@ def main(argv=None):
 
     # 4. 模型（uv 偏移要含边缘复制的 1px）
     uv_off = {base: (rects[base][0] + BORDER, rects[base][1] + BORDER)
-              for _b, _t, _p, base in BLOCKS}
+              for _b, _t, _p, base, _ty in MODELS}
     new_models = build_models(uv_off, tex_by_model)
     for key, quads in new_models.items():
-        check_quads(quads, atlas_size, where='模型 %s' % key)
+        check_quads(quads, atlas_size, where='模型 %s' % key, pad=1)
     for (base, y), mid in ids.items():
         quads = new_models['%s|%d' % (base, y)]
         models[mid] = {'quads': quads}
 
     # 5. blocks.json
+    # 变体顺序很关键：db.resolve 取第一个 when 命中的变体，而 propsMatch 只校验 when
+    # 里出现的键，所以「带 type 的」必须排在「只有 facing 的」前面，否则双箱状态会被
+    # 单箱变体先吃掉。
     blk = blocks['blocks']
-    for block_id, _tex, _p, base in BLOCKS:
-        old = blk.get(block_id) or {}
+    for block_id, _tex, _p, _base in BLOCKS:
+        specs = [m for m in MODELS if m[0] == block_id]
+        plain = [s for s in specs if s[4] is None]
+        typed = [s for s in specs if s[4] is not None]
         # 实体纹理里六个面的取样区全部不透明，但图集 tile 内「没被任何面取样」的
         # 间隙像素 alpha=0；设成 cutout 就不会把它们当黑色画出来（opaque 会）。
-        render = 'cutout'
         variants = []
         for fac, y in FACINGS:
-            variants.append({'when': {'facing': fac}, 'models': [ids[(base, y)]]})
-        variants.append({'models': [ids[(base, 0)]]})   # 兜底（无 when）
-        blk[block_id] = {'kind': 'variants', 'variants': variants, 'render': render}
+            for s in typed:
+                variants.append({'when': {'facing': fac, 'type': s[4]},
+                                 'models': [ids[(s[3], y)]]})
+        for fac, y in FACINGS:
+            for s in plain:
+                variants.append({'when': {'facing': fac}, 'models': [ids[(s[3], y)]]})
+        for s in plain:
+            variants.append({'models': [ids[(s[3], 0)]]})   # 兜底（无 when）
+        blk[block_id] = {'kind': 'variants', 'variants': variants, 'render': 'cutout'}
 
     # 6. meta.json
-    my_bases = set(base for _b, _t, _p, base in BLOCKS)
+    my_bases = set(m[3] for m in MODELS)
     fb = [m for m in (meta.get('fallbackModels') or []) if m.split('#')[0] not in my_bases]
     meta['fallbackModels'] = fb
     stats = meta.get('stats') or {}
@@ -516,28 +577,31 @@ def main(argv=None):
     meta['quadCount'] = quad_total
     prev_marker = meta.get(MARKER_KEY) or {}
     if not prev_marker:
-        meta['textureCount'] = int(meta.get('textureCount') or 0) + len(BLOCKS)
+        meta['textureCount'] = int(meta.get('textureCount') or 0) + len(MODELS)
         at = meta.get('atlas') or {}
-        used = int(at.get('usedPixels') or 0) + TILE_W * TILE_H * len(BLOCKS)
+        used = int(at.get('usedPixels') or 0) + TILE_W * TILE_H * len(MODELS)
         if at:
             at['usedPixels'] = used
         meta['atlasUsage'] = round(used / float(atlas_size * atlas_size), 4)
     # notes 每次都用最新文本重写（旧版本自己写的那条会被替换掉），这样可以改说明
     note = ('箱子（chest/trapped_chest/ender_chest）已用原版 ChestModel 实体几何替换'
             '（tools/bake/post_entity_models.py）：bottom/lid/lock 三个盒共 18 quad，'
-            '纹理 textures/entity/chest/{normal,trapped,ender}.png 的 56x43 有效区已贴入 atlas；'
-            'facing 用 #0,90/#0,180/#0,270 三个旋转模型覆盖；render=cutout'
+            '纹理 textures/entity/chest/{normal,trapped,ender}(_left/_right).png 的 56x43 '
+            '有效区已贴入 atlas；facing 用 #0,90/#0,180/#0,270 三个旋转模型覆盖；render=cutout'
             '（实体纹理的六个取样面全不透明，但 tile 内未被取样的间隙像素 alpha=0）。'
-            '双箱（type=left/right）未复刻，统一按单箱渲染。')
+            '双箱（type=left/right）用原版的 _left/_right 纹理复刻：几何与单箱相同，'
+            '只是朝向缝隙那一面在纹理里透明，两块并排即拼成 30px 宽的双箱。')
     notes = [x for x in (meta.get('notes') or []) if 'post_entity_models' not in str(x)]
     meta['notes'] = list(notes) + [note]
     meta[MARKER_KEY] = {
         'tool': 'tools/bake/post_entity_models.py',
         'blocks': [b for b, _t, _p, _m in BLOCKS],
-        'rects': {base: [rects[base][0], rects[base][1]] for _b, _t, _p, base in BLOCKS},
+        'rects': {base: [rects[base][0], rects[base][1]]
+                  for _b, _t, _p, base, _ty in MODELS},
         'tile': [TILE_W, TILE_H],
         'quadPerModel': 6 * len(PARTS),
-        'models': [ids[(base, y)] for _b, _t, _p, base in BLOCKS for _f, y in FACINGS],
+        'models': [ids[(base, y)] for _b, _t, _p, base, _ty in MODELS
+                   for _f, y in FACINGS],
     }
 
     # 7. 落盘
@@ -554,7 +618,7 @@ def main(argv=None):
             write_json(os.path.join(models_dir, model_file_name(mid) + '.json'),
                        models[mid].get('quads') or [])
             touched += 1
-        # manifest.modelsCount 也要跟着更新（新增了 12 个箱子变体模型）
+        # manifest.modelsCount 也要跟着更新（新增的箱子变体模型）
         man = load_json(paths['manifest'])
         if man.get('modelsMode') == 'files':
             man['modelsCount'] = len(models_doc.get('models') or {})
@@ -564,7 +628,7 @@ def main(argv=None):
 
     # 8. 复读自检：图集像素与源纹理逐像素比对
     back = np.asarray(Image.open(atlas_path).convert('RGBA'))
-    for _b, _t, _p, base in BLOCKS:
+    for _b, _t, _p, base, _ty in MODELS:
         x, y = rects[base]
         got = back[y:y + TILE_H, x:x + TILE_W, :4]
         if not np.array_equal(got, tiles[base]):
@@ -582,11 +646,11 @@ def main(argv=None):
     print('  模型：%d 个（每个 18 quad）→ %s' % (
         len(ids), ', '.join(sorted(set(ids.values())))))
     if args.verbose:
-        for _b, _t, _p, base in BLOCKS:
+        for _b, _t, _p, base, _ty in MODELS:
             print('    %-22s atlas=%r  tile u%d..%d v%d..%d'
                   % (base, rects[base], rects[base][0], rects[base][0] + TILE_W,
                      rects[base][1], rects[base][1] + TILE_H))
-        for base in (m for _b, _t, _p, m in BLOCKS):
+        for base in (m for _b, _t, _p, m, _ty in MODELS):
             for fac, y in FACINGS:
                 mid = ids[(base, y)]
                 qs = models[mid]['quads']

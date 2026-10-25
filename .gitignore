@@ -29,3 +29,6 @@ tests/_smoke*/
 # ÅÉÉúÔ¤ÀÀ/ºæ±ºÊä³ö
 tests/packs/_view/
 tools/bake/_preview/
+tests/_pack_out*/
+tests/_pack_qa_out*/
+tests/_synthetic/
