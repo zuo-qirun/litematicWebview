@@ -165,6 +165,8 @@ class PackLayer(object):
         self.ignored = 0         # 非 minecraft 资源的条目数（pack.mcmeta / __MACOSX / 别的命名空间等）
         self.raw_entries = 0
         self.aliased = []        # 老版本路径（textures/blocks/ 等）映射后的纹理名
+        self.skipped = []        # 无法使用而被跳过的文件 (key, 原因)
+        self.bad_json = set()    # 读取阶段发现解析失败的 JSON key（避免重复记录）
         for info in self.zip.infolist():
             if info.filename.endswith('/'):
                 continue
@@ -214,23 +216,39 @@ class PackLayer(object):
         return self.zip.read(info) if info is not None else None
 
     def _validate_json_files(self):
+        bad = []
         for key in self.blockstates + self.models + self.lang:
             raw = self.read(key)
             try:
                 obj = json.loads(raw.decode('utf-8-sig'))
             except Exception as exc:
-                raise PackError('材质包内 JSON 无法解析：%s（%s）' % (key, exc))
+                bad.append((key, 'JSON 无法解析：%s' % exc))
+                continue
             if not isinstance(obj, dict):
-                raise PackError('材质包内 JSON 顶层必须是对象：%s' % key)
+                bad.append((key, '顶层必须是对象'))
+        if bad:
+            # 单个坏文件不足以让整包失败：跳过它，让其余覆盖照常生效
+            self.skipped.extend(bad)
+            drop = set(k for k, _ in bad)
+            self.blockstates = [k for k in self.blockstates if k not in drop]
+            self.models = [k for k in self.models if k not in drop]
+            self.lang = [k for k in self.lang if k not in drop]
 
     def _validate_textures(self):
+        bad = []
+        good = []
         for key in self.textures:
             raw = self.read(key)
             try:
                 im = Image.open(io.BytesIO(raw))
                 im.load()
             except Exception as exc:
-                raise PackError('材质包内 PNG 无法解码：%s（%s）' % (key, exc))
+                bad.append((key, 'PNG 无法解码：%s' % exc))
+                continue
+            good.append(key)
+        if bad:
+            self.skipped.extend(bad)
+            self.textures = good
 
     def _read_pack_meta(self):
         """解析 pack.mcmeta（容错 BOM / 大小写 / 外层目录）。
@@ -341,7 +359,10 @@ class LayeredSource(object):
                 return json.loads(raw.decode('utf-8-sig'))
             except Exception as exc:
                 if isinstance(layer, PackLayer):
-                    raise PackError('材质包内 JSON 无法解析：%s（%s）' % (key, exc))
+                    if key not in layer.bad_json:
+                        layer.bad_json.add(key)
+                        layer.skipped.append((key, 'JSON 无法解析：%s' % exc))
+                    continue  # 跳过坏文件，回退到下一层（客户端 jar）
                 raise
         return default
 
@@ -1038,6 +1059,14 @@ def run(args):
         ('lang', len(pack.lang)),
     ])
     overrides_total = sum(overrides_detail.values())
+    skipped_unique = collections.OrderedDict()
+    for key, why in pack.skipped:
+        skipped_unique.setdefault(key, why)
+    if skipped_unique:
+        warnings.append('材质包内有 %d 个文件无法使用，已跳过：%s'
+                        % (len(skipped_unique),
+                           '；'.join('%s（%s）' % (k, w)
+                                    for k, w in list(skipped_unique.items())[:3])))
     report = collections.OrderedDict([
         ('ok', True),
         ('overrides', overrides_total),
@@ -1046,6 +1075,8 @@ def run(args):
         ('elapsedMs', int(round((time.time() - t_start) * 1000))),
         ('warnings', warnings),
         ('notes', notes),
+        ('skippedEntries', [collections.OrderedDict([('path', k), ('reason', why)])
+                            for k, why in skipped_unique.items()]),
         ('pack', collections.OrderedDict([
             ('file', os.path.basename(pack_path)),
             ('size', os.path.getsize(pack_path)),

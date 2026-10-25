@@ -140,6 +140,10 @@ node _deploy/put.mjs app  /www/wwwroot/litematic.zuoqirun.top/app
 
 `MCVIEWER_PYTHON` 已指向该 venv。若能力探测显示 `packsSupported:false`，先检查这里。
 
+**两个客户端 jar 都要放**：`app/_dl/` 下需要 `client-1.21.1.jar`（主基准）**和** `client-26.3.jar`（补新方块）。只放 1.21.1 时烘焙产物会少掉 200 多个 26.3 新增方块，用这些方块的投影会出现缺失模型。
+
+材质包里的单个坏文件不会让整包失败：解析失败的 `blockstates/models/lang` JSON 或坏 PNG 会被跳过（回退到内置资源），并写进 `report.json` 的 `skippedEntries` 与 `warnings`，面板照常可以用。
+
 ## 首屏体积与缓存（2026-10 优化）
 
 远端带宽是家庭宽带上行，所以前端按「能省则省」设计，`node build.mjs` 会自动做五件事：
