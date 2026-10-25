@@ -1,0 +1,121 @@
+{
+  "FormatVersion": "1.0",
+  "Rules": [
+    {
+      "RuleName": "网站加速-litematic.zuoqirun.top",
+      "Branches": [
+        {
+          "Condition": "${http.request.host} in ['litematic.zuoqirun.top']",
+          "Actions": [
+            {
+              "Name": "Cache",
+              "CacheParameters": {
+                "FollowOrigin": {
+                  "Switch": "on",
+                  "DefaultCache": "on",
+                  "DefaultCacheStrategy": "on",
+                  "DefaultCacheTime": 0
+                }
+              }
+            },
+            {
+              "Name": "CacheKey",
+              "CacheKeyParameters": {
+                "QueryString": {
+                  "Switch": "on",
+                  "Values": []
+                },
+                "FullURLCache": "on",
+                "IgnoreCase": "off"
+              }
+            }
+          ],
+          "SubRules": [
+            {
+              "Branches": [
+                {
+                  "Condition": "${http.request.uri.path} matches '/api/*'",
+                  "Actions": [
+                    {
+                      "Name": "Cache",
+                      "CacheParameters": {
+                        "NoCache": {
+                          "Switch": "on"
+                        }
+                      }
+                    }
+                  ]
+                }
+              ],
+              "Description": []
+            },
+            {
+              "Branches": [
+                {
+                  "Condition": "${http.request.uri.path} in ['/'] or ${http.request.file_extension} in ['html', 'htm']",
+                  "Actions": [
+                    {
+                      "Name": "Cache",
+                      "CacheParameters": {
+                        "NoCache": {
+                          "Switch": "on"
+                        }
+                      }
+                    }
+                  ]
+                }
+              ],
+              "Description": []
+            },
+            {
+              "Branches": [
+                {
+                  "Condition": "${http.request.uri.path} matches '/assets/*' or ${http.request.uri.path} matches '/packs/*' or ${http.request.uri.path} matches '/samples/*' or ${http.request.uri.path} in ['/app.js', '/styles.css']",
+                  "Actions": [
+                    {
+                      "Name": "Cache",
+                      "CacheParameters": {
+                        "FollowOrigin": {
+                          "Switch": "on",
+                          "DefaultCache": "on",
+                          "DefaultCacheStrategy": "on",
+                          "DefaultCacheTime": 0
+                        }
+                      }
+                    },
+                    {
+                      "Name": "MaxAge",
+                      "MaxAgeParameters": {
+                        "FollowOrigin": "on",
+                        "CacheTime": 0
+                      }
+                    }
+                  ]
+                }
+              ],
+              "Description": []
+            },
+            {
+              "Branches": [
+                {
+                  "Condition": "${http.request.file_extension} in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg', 'webp', 'ico', 'woff', 'woff2', 'js', 'css']",
+                  "Actions": [
+                    {
+                      "Name": "MaxAge",
+                      "MaxAgeParameters": {
+                        "FollowOrigin": "off",
+                        "CacheTime": 86400
+                      }
+                    }
+                  ]
+                }
+              ],
+              "Description": []
+            }
+          ]
+        }
+      ],
+      "Description": []
+    }
+  ]
+}
