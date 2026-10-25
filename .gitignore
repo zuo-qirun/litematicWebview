@@ -1,0 +1,31 @@
+# ä¾èµ–
+node_modules/
+pnpm-lock.yaml.bak
+
+# è¿è¡Œæ—¶æ•°æ®ï¼ˆæœåŠ¡å™¨æŠ•å½± / æè´¨åŒ…ï¼‰
+data/
+
+# æ„å»ºäº§ç‰©
+dist/
+
+# å¤§æ–‡ä»¶ / ä¸­é—´äº§ç‰©ï¼ˆä¸å…¥åº“ï¼‰
+_dl/
+_ref/
+**/__pycache__/
+tools/bake/_work/
+tests/e2e/_shots/
+tests/ui/_shots/
+
+# ç³»ç»Ÿ
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# ²âÊÔÔËĞĞÊ±Êı¾İ£¨UI/²ÄÖÊ°üÃ°ÑÌ»áĞ´Èë£©
+tests/_data_ui*/
+tests/_data_pack/out/
+tests/_smoke*/
+
+# ÅÉÉúÔ¤ÀÀ/ºæ±ºÊä³ö
+tests/packs/_view/
+tools/bake/_preview/

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>投影查看器 · UI 自检台</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "/node_modules/three/build/three.module.js",
+          "three/addons/": "/node_modules/three/examples/jsm/"
+        }
+      }
+    </script>
+    <style>
+      /* 自检台专用：让 404 的资源更醒目，但不干扰布局 */
+      #app { height: 100vh; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="boot" role="status" aria-live="polite">
+      <div class="boot-mark"></div>
+      <div class="boot-title">投影查看器</div>
+      <div class="boot-sub" id="boot-sub">正在自检台启动…</div>
+    </div>
+    <script type="module" src="/tests/ui/harness.js"></script>
+  </body>
+</html>

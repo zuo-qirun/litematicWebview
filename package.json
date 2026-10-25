@@ -1,0 +1,27 @@
+{
+  "name": "mcviewer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Litematica (.litematic) schematic viewer that runs outside Minecraft",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --dev --watch",
+    "start": "node server.mjs --open",
+    "serve": "node server.mjs",
+    "test": "node tests/parser/run.mjs && node tests/api/run.mjs && node tests/e2e/run.mjs",
+    "test:parser": "node tests/parser/run.mjs",
+    "test:api": "node tests/api/run.mjs",
+    "test:ui": "node tests/ui/server-smoke.mjs",
+    "test:packs": "node tests/ui/pack-smoke.mjs",
+    "test:zoom": "node tests/ui/zoom-linear.mjs",
+    "test:e2e": "node tests/e2e/run.mjs"
+  },
+  "dependencies": {
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "puppeteer-core": "^24.0.0"
+  }
+}

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mcviewer · 侧边栏面板 harness</title>
+<link rel="stylesheet" href="../../styles.css">
+<style>
+  /* harness 专用：撑满视口、隐藏启动画面、给空画布一点底 */
+  html, body { height: 100%; margin: 0; overflow: hidden; }
+  #app { height: 100%; }
+  #boot { display: none !important; }
+  .harness-stage-hint {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    color: var(--text-faint);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script src="./_tmp/panels.bundle.js"></script>
+</body>
+</html>
