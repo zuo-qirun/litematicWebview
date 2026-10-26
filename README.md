@@ -65,11 +65,19 @@ node server.mjs --open    :: 启动 http://127.0.0.1:5178/ 并打开浏览器
 
 <table>
 <tr>
-<td><img src="docs/shots/double-chest.png" alt="双箱子" width="420"></td>
+<td><img src="docs/shots/double-chest-close.png" alt="双箱子" width="420"></td>
+<td><img src="docs/shots/shulker-box.png" alt="潜影盒" width="420"></td>
+</tr>
+<tr>
+<td align="center">双箱子拼成 30px 宽、中间只有一个锁扣、无接缝黑线</td>
+<td align="center">潜影盒按原版 16³ 盒几何合成，17 种颜色都能正确上色</td>
+</tr>
+<tr>
+<td><img src="docs/shots/entity-icons.png" alt="实体头像" width="420"></td>
 <td><img src="docs/shots/fluids.png" alt="流体高度" width="420"></td>
 </tr>
 <tr>
-<td align="center">双箱子拼成 30px 宽、中间只有一个锁扣</td>
+<td align="center">生物改显示原版贴图头像（从 jar 裁脸，78 种）</td>
 <td align="center">水流按 <code>level</code> 分级高度、岩浆同理、含水方块叠水层</td>
 </tr>
 <tr>
