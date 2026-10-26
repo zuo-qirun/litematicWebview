@@ -164,11 +164,8 @@ node server.mjs --host 0.0.0.0 --port 5178 --token "换成一串 32 位随机字
 
 ### 线上实例
 
-已经部署在 `ser8-home`（宝塔面板管理，站点 `litematic.zuoqirun.top`）：
-
-- 页面：<http://litematic.zuoqirun.top>（HTTPS 待域名解析后跑 `deploy/enable-ssl.sh`）
+- 页面：<http://litematic.zuoqirun.top>
 - 部署形态：宝塔「Node 项目」`litematic_viewer`（`/usr/bin` 无依赖，用宝塔自带的 Node v24）监听 `127.0.0.1:5180`，静态文件与 `/api`、`/packs` 全部由它提供，nginx 只做 80/443 入口反代；开机自启由宝塔 `is_power_on` 负责
-- 数据落盘：`/www/wwwroot/litematic.zuoqirun.top/data/`
 - 访问策略：**不设令牌，任何人可浏览/上传/删除**（写接口按 IP 限速 20 次/分钟；想收紧就按 DEPLOY.md 加回 `MCVIEWER_TOKEN`）
 - 首屏做了五层优化（按需模型分片、brotli 预压缩、`?v=` + immutable 缓存、图集无损 WebP、分段加载）：空态首屏 ≈ 170 KB（HTTPS）/ 198 KB（HTTP），打开一个投影**只下它实际用到的方块模型**、再下 ≈ 370 KB，二次访问 ≈ 6 KB；细节与实测表见 **[docs/DEPLOY.md](docs/DEPLOY.md)**「首屏体积与缓存」
 - 完整运维手册（目录、令牌、升级、备份、排错）：**[docs/DEPLOY.md](docs/DEPLOY.md)**
