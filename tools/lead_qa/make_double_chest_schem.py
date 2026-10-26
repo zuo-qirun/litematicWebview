@@ -6,8 +6,8 @@
   (0,0) chest[facing=north,type=single]
   (1,0) trapped_chest[facing=north,type=single]
   (2,0) ender_chest[facing=north]
-  北向双箱：西侧 (3,0)=type=right，东侧 (4,0)=type=left
-  东向双箱：北侧 (6,2)=type=right，南侧 (6,3)=type=left
+  北向双箱：西侧 (3,0)=type=left，东侧 (4,0)=type=right
+  东向双箱：北侧 (6,2)=type=left，南侧 (6,3)=type=right
   (8,0) chest[facing=east,type=single]
 
 判定要点：双箱两块之间不能有缝、锁扣要各在中轴两侧、整体宽度 30px。
@@ -98,12 +98,12 @@ def main():
                       {'facing': 'north', 'type': 'single', 'waterlogged': 'false'}),
         (2, 0): state('minecraft:ender_chest',
                       {'facing': 'north', 'waterlogged': 'false'}),
-        # 北向双箱：facing=north 时 left 在东侧（+X）
-        (3, 0): chest('north', 'right'),
-        (4, 0): chest('north', 'left'),
-        # 东向双箱：facing=east 时 left 在南侧（+Z）
-        (6, 2): chest('east', 'right'),
-        (6, 3): chest('east', 'left'),
+        # 北向双箱（实测 127 对）：facing=north 时 type=left 在**西**侧、right 在东侧
+        (3, 0): chest('north', 'left'),
+        (4, 0): chest('north', 'right'),
+        # 东向双箱（实测 680 对）：facing=east 时 type=left 在**北**侧、right 在南侧
+        (6, 2): chest('east', 'left'),
+        (6, 3): chest('east', 'right'),
         (8, 0): chest('east', 'single'),
     }
     build(cells, args.out)

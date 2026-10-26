@@ -85,26 +85,27 @@ PARTS = (
     ('lock', (7, 7, 15, 9, 11, 16), (0, 0), (2, 4, 1)),
 )
 
-# 双箱的两个半块：
-#   最终朝北时，大箱子横跨 x 1..31，西半（type=right）占本方块 x 1..16、东半
-#   （type=left）占 x 0..15，两块在方块边界处严丝合缝。这里给的是**原版坐标系**
+# 双箱的两个半块（实测自 2246 个真实半箱：facing=north 时 type=left 在**西侧**块、
+# type=right 在东侧块；其余朝向按 y 旋转同理）：
+#   最终朝北时，大箱子横跨 x 1..31，西侧块（type=left）占本方块 x 1..16、东侧块
+#   （type=right）占 x 0..15，两块在方块边界处严丝合缝。这里给的是**原版坐标系**
 #   （锁扣朝 +Z），所以还要过一遍 BASE_STATE_Y=180 的预旋转（x → 16-x）：
-#     西半 x 1..16  ← 预旋转前 x 0..15
-#     东半 x 0..15  ← 预旋转前 x 1..16
+#     西侧块 x 1..16  ← 预旋转前 x 0..15
+#     东侧块 x 0..15  ← 预旋转前 x 1..16
 #   180° 旋转会把东西面互换（uv 仍跟着原来的面走），因此：
-#     西半的接缝面最终朝东 → 用 normal_left 纹理（它把 west 面涂透明）
-#     东半的接缝面最终朝西 → 用 normal_right 纹理（它把 east 面涂透明）
-#   锁扣只让西半画在接缝上（原版两半各画一半，视觉等价且避免重复几何）。
-PARTS_WEST = (                                    # 最终占 x 1..16，接缝在东侧
+#     西侧块（type=left）的接缝面最终朝东 → 用 normal_left 纹理（它把 west 面涂透明）
+#     东侧块（type=right）的接缝面最终朝西 → 用 normal_right 纹理（它把 east 面涂透明）
+#   锁扣只让西侧块画在接缝上（原版两半各画一半，视觉等价且避免重复几何）。
+PARTS_WEST = (                                    # 最终占 x 1..16，接缝在东侧 → type=left
     ('bottom', (0, 0, 1, 15, 10, 15), (0, 19), (15, 10, 14)),
     ('lid', (0, 9, 1, 15, 14, 15), (0, 0), (15, 5, 14)),
     ('lock', (-1, 7, 15, 1, 11, 16), (0, 0), (2, 4, 1)),
 )
-PARTS_EAST = (                                    # 最终占 x 0..15，接缝在西侧
+PARTS_EAST = (                                    # 最终占 x 0..15，接缝在西侧 → type=right
     ('bottom', (1, 0, 1, 16, 10, 15), (0, 19), (15, 10, 14)),
     ('lid', (1, 9, 1, 16, 14, 15), (0, 0), (15, 5, 14)),
 )
-PARTS_BY_TYPE = {None: PARTS, 'right': PARTS_WEST, 'left': PARTS_EAST}
+PARTS_BY_TYPE = {None: PARTS, 'left': PARTS_WEST, 'right': PARTS_EAST}
 
 # 我方复刻的方块（顺序即 blocks.json 变体生成顺序）
 BLOCKS = (
@@ -118,24 +119,28 @@ BLOCKS = (
 # 渲染规格：每个「纹理 + 模型基名」一条——
 #   (所属方块 id, 纹理 id, jar 内路径, 模型 id 基名, type 属性值 or None)
 #
-# 双箱（type=left/right）：原版 ChestBlockEntityRenderer 对左/右半用的是**同一套 14 宽的
-# 单箱几何**，只是把朝向缝隙那一面在纹理里涂成透明（normal_left 的 west 面、
-# normal_right 的 east 面透明），因此几何完全不用改，只需换纹理即可拼成 30px 宽的双箱。
-# 对 facing=north：type=left 是东侧那块（缝隙在它的西侧），type=right 是西侧那块。
+# 双箱（type=left/right）：原版 ChestBlockEntityRenderer 对左/右块用的是**同一套单箱几何**，
+# 只是把朝向缝隙那一面在纹理里涂成透明（normal_left 把 west 面涂透明、normal_right 把 east
+# 面涂透明），因此几何不用重新设计，只需各自的半块几何 + 对应纹理即可拼成 30px 宽的双箱。
+# 实测（2246 个真实半箱，见 tools/lead_qa/probe_chest_pairs.py）：facing=north 时
+#   type=left 块在西侧、type=right 块在东侧；其余朝向按 y 旋转同步。
+# 结合 BASE_STATE_Y=180 预旋转后的透明面朝向：
+#   西侧块（type=left，接缝朝东）→ normal_left
+#   东侧块（type=right，接缝朝西）→ normal_right
 # 末影箱没有 double 形态，只有单箱。
 MODELS = (
     ('minecraft:chest', 'entity/chest/normal', 'textures/entity/chest/normal.png',
      'block/chest', None),
     ('minecraft:chest', 'entity/chest/normal_left', 'textures/entity/chest/normal_left.png',
-     'block/chest_west', 'right'),
+     'block/chest_west', 'left'),
     ('minecraft:chest', 'entity/chest/normal_right', 'textures/entity/chest/normal_right.png',
-     'block/chest_east', 'left'),
+     'block/chest_east', 'right'),
     ('minecraft:trapped_chest', 'entity/chest/trapped', 'textures/entity/chest/trapped.png',
      'block/trapped_chest', None),
     ('minecraft:trapped_chest', 'entity/chest/trapped_left',
-     'textures/entity/chest/trapped_left.png', 'block/trapped_chest_west', 'right'),
+     'textures/entity/chest/trapped_left.png', 'block/trapped_chest_west', 'left'),
     ('minecraft:trapped_chest', 'entity/chest/trapped_right',
-     'textures/entity/chest/trapped_right.png', 'block/trapped_chest_east', 'left'),
+     'textures/entity/chest/trapped_right.png', 'block/trapped_chest_east', 'right'),
     ('minecraft:ender_chest', 'entity/chest/ender', 'textures/entity/chest/ender.png',
      'block/ender_chest', None),
 )

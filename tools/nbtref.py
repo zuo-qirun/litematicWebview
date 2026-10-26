@@ -160,6 +160,9 @@ class W:
         elif t == 12:
             self.b += struct.pack('>i', len(v))
             for x in v:
+                # NBT Long 是有符号 64 位，但位打包的 long 可能落在 2^63..2^64-1
+                if not (-(1 << 63) <= x < (1 << 63)):
+                    x -= 1 << 64 if x >= (1 << 63) else 0
                 self.b += struct.pack('>q', x)
         else:
             raise ValueError(t)
