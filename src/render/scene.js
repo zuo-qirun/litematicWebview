@@ -12,7 +12,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { buildStateGeometry, missingGeometry } from "./geometry.js";
 import { fluidInfo, waterloggedInfo, isPureFluid, FLUID_INSET } from "./fluids.js";
-import { createEntityLayer } from "./entities.js";
+import { createEntityLayer, loadEntityIcons } from "./entities.js";
 
 export const ACCENT = 0x7ee787;
 export const ACCENT_HEX = "#7ee787";
@@ -639,14 +639,18 @@ export class ViewerScene {
     }
     const drawn = this.meshes.reduce((a, m) => a + m.count, 0);
 
-    // ---- 4. 实体标记（名字标签）
+    // ---- 4. 实体标记（有贴图就用贴图，否则名字标签）
     {
       const extent = Math.max(this.bounds.sx, this.bounds.sy, this.bounds.sz) || 16;
       const scale = clamp(extent / 34, 0.7, 3.4);
-      this._entityLayer = createEntityLayer(schematic, { offset: this.offset, scale });
+      if (!this._entityIcons) this._entityIcons = await loadEntityIcons(db);
+      this._entityLayer = createEntityLayer(schematic, {
+        offset: this.offset, scale, icons: this._entityIcons,
+      });
       this._entityLayer.group.visible = this.entitiesOn !== false;
       this.group.add(this._entityLayer.group);
       this.entityCount = this._entityLayer.count;
+      this.entityIconCount = this._entityLayer.iconCount || 0;
     }
 
     // ---- 5. 体素栅格

@@ -541,6 +541,23 @@ def main(argv=None):
     uv_off = {base: (rects[base][0] + BORDER, rects[base][1] + BORDER)
               for _b, _t, _p, base, _ty in MODELS}
     new_models = build_models(uv_off, tex_by_model)
+
+    # 双箱半块的纹理里，「锁扣」那块是空的（原版双箱只有一个锁扣，画在接缝处）。
+    # 直接沿用会把锁扣渲染成透明黑洞 → 用户看到的「中间一条黑色竖线」。
+    # 修法：西半块的锁扣 UV 改到单箱纹理里对应的锁扣位置。
+    lock_src = {'block/chest_west': 'block/chest',
+                'block/trapped_chest_west': 'block/trapped_chest'}
+    for half, full in lock_src.items():
+        du = uv_off[full][0] - uv_off[half][0]
+        dv = uv_off[full][1] - uv_off[half][1]
+        for _fac, y in FACINGS:
+            for item in new_models['%s|%d' % (half, y)][-6:]:
+                uv = item['uv']
+                for i in (0, 2, 4, 6):
+                    uv[i] += du
+                for i in (1, 3, 5, 7):
+                    uv[i] += dv
+
     for key, quads in new_models.items():
         check_quads(quads, atlas_size, where='模型 %s' % key, pad=1)
     for (base, y), mid in ids.items():

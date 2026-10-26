@@ -57,7 +57,13 @@ assets/models.json         # 已烘焙好的模型几何（旋转已展开）；
 assets/lang.json           # 中英文方块名
 assets/meta.json           # 版本、统计、生成时间、无法解析的清单
 assets/models/<encoded>.json  # 可选：单文件模型，见 1.3b
+assets/entity-icons.png    # 可选：实体头像图集（由 post_entity_icons.py 从 jar 裁脸拼成）
+assets/entity-icons.json   # 可选：{file,size,cell,padding,icons:{ "<实体 id>": [x,y,w,h] }}
 ```
+
+实体头像图集不是方块几何的一部分：`entity-icons.json` 的 `icons` 里每个实体 id 对应
+图集里一格（`cell` 见文件，默认 16，图标间留 `padding` 像素）；渲染器按需取用，
+没有对应条目的实体仍然退回名字标签。
 
 ### 1.1 manifest.json
 ```json
